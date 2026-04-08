@@ -32,7 +32,9 @@ Then add to your opencode.json:
 }
 ```
 
-### Option 2: Local Development
+### Option 2: Local Development (optional)
+
+If you want to use a local copy instead of npm:
 
 ```bash
 git clone https://github.com/farseenmanekhan1232/opencode-ollama-multi-auth.git
@@ -41,19 +43,7 @@ npm install
 npm run build
 ```
 
-Add to your opencode.json with file path:
-
-```json
-{
-  "plugin": [
-    ["file:///path/to/opencode-ollama-multi-auth", {
-      "ollamaMultiAuth": {
-        "keys": ["your-api-keys"]
-      }
-    }]
-  ]
-}
-```
+Then reference it directly in your opencode.json.
 
 ## Quick Start
 
