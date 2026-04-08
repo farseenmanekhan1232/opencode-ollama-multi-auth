@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "ollamaMultiAuth": {
+    "keys": [
+      "sk-your-first-api-key",
+      "sk-your-second-api-key",
+      "sk-your-third-api-key"
+    ],
+    "failWindowMs": 18000000,
+    "cloudUrl": "https://ollama.com"
+  }
+}
