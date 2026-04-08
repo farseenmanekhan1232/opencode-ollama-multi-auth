@@ -5,31 +5,82 @@ Opencode plugin for managing multiple Ollama Cloud API keys with automatic failo
 ## Features
 
 - **Multiple API Keys** - Add any number of API keys
-- **Automatic Failover** - Automatically switch to next key when current one fails
-- **Key Recovery** - Re-enable failed keys after 5 hours
-- **Dual Configuration** - Support both opencode.json and environment variables
+- **Automatic Failover** - Automatically switch to next key when current one fails (401, 403, 429)
+- **Key Recovery** - Re-enable failed keys after 5 hours (configurable)
+- **Multi-Source Keys** - Load from opencode.json, environment variables, or existing auth.json
+- **Fetch Wrapper** - Intercepts requests and retries with next key on auth errors
 
 ## Installation
 
+### Option 1: npm (recommended)
+
 ```bash
-cd opencode-ollama-multi-auth
-bun install
-bun run build
-bun link
+npm install -g opencode-ollama-multi-auth
 ```
 
-## Configuration
-
-### Option 1: opencode.json
-
-Add to your project's `opencode.json`:
+Then add to your opencode.json:
 
 ```json
 {
   "plugin": [
+    "opencode-ollama-multi-auth"
+  ]
+}
+```
+
+### Option 2: Local Development
+
+```bash
+cd opencode-ollama-multi-auth
+npm install
+npm run build
+```
+
+Add to your opencode.json with file path:
+
+```json
+{
+  "plugin": [
+    ["file:///path/to/opencode-ollama-multi-auth", {
+      "ollamaMultiAuth": {
+        "keys": ["your-api-keys"]
+      }
+    }]
+  ]
+}
+```
+
+## Configuration
+
+### Keys Source Priority
+
+1. **opencode.json** (highest priority)
+2. **Environment variables**
+3. **Existing auth.json** (fallback - if you've run `/connect` before)
+
+### Option 1: opencode.json
+
+Add to your project's `opencode.json` or global `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "model": "ollama/gemma4:31b-cloud",
+  "provider": {
+    "ollama-cloud": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://ollama.com/v1"
+      }
+    }
+  },
+  "plugin": [
     ["opencode-ollama-multi-auth", {
       "ollamaMultiAuth": {
-        "keys": ["sk-key1", "sk-key2", "sk-key3"],
+        "keys": [
+          "your-ollama-cloud-key-1",
+          "your-ollama-cloud-key-2",
+          "your-ollama-cloud-key-3"
+        ],
         "failWindowMs": 18000000
       }
     }]
@@ -40,20 +91,40 @@ Add to your project's `opencode.json`:
 ### Option 2: Environment Variables
 
 ```bash
-export OLLAMA_API_KEY_1=sk-xxx
-export OLLAMA_API_KEY_2=sk-yyy
-export OLLAMA_API_KEY_3=sk-zzz
-# Add more with OLLAMA_API_KEY_4, etc.
+export OLLAMA_API_KEY="your-first-key"
+export OLLAMA_API_KEY_1="your-second-key"
+export OLLAMA_API_KEY_2="your-third-key"
+# Add more with OLLAMA_API_KEY_3, etc.
 ```
 
-## Usage
+### Option 3: Existing Credentials
 
-Once configured, the plugin automatically:
-1. Loads all configured API keys
-2. Selects the first available (non-failed) key for each request
-3. Monitors for authentication errors (401, 403, 429, rate limits)
-4. Marks failed keys and rotates to next available key
-5. Re-enables keys after 5 hours
+If you've previously run `/connect` and added Ollama Cloud credentials, those are automatically included as fallback keys.
+
+## How It Works
+
+1. **On Load**: Plugin loads all keys from config + env + existing auth, deduplicates them
+2. **On Request**: Selects first available (non-failed) key
+3. **On Auth Error** (401/403/429): 
+   - Marks current key as failed
+   - Rotates to next available key
+   - Retries request immediately
+4. **Key Recovery**: Failed keys are re-enabled after 5 hours (or `failWindowMs`)
+
+## Provider Configuration
+
+The plugin works with the `ollama-cloud` provider:
+
+```json
+"provider": {
+  "ollama-cloud": {
+    "npm": "@ai-sdk/openai-compatible",
+    "options": {
+      "baseURL": "https://ollama.com/v1"
+    }
+  }
+}
+```
 
 ## State File
 
@@ -62,12 +133,17 @@ Key failure state is stored in `~/.opencode/ollama-keys-state.json`
 ## Troubleshooting
 
 Run opencode with verbose logging to see key selection:
+
 ```bash
-opencode --verbose
+opencode --print-logs --log-level DEBUG
 ```
+
+Look for logs:
+- `[ollama-multi-auth] Loaded X API keys`
+- `[ollama-multi-auth] Using key X/Y`
 
 ## Notes
 
-- The plugin hooks into the `ollama` auth provider
-- It only monitors for tool executions named `ollama`, `ollama_chat`, or `ollama_generate`
+- The plugin hooks into the `ollama-cloud` auth provider
 - If all keys fail, it falls back to the first key with a warning
+- API keys are never logged, only truncated for display

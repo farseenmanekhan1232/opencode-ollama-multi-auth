@@ -1,6 +1,7 @@
 {
   "name": "opencode-ollama-multi-auth",
   "version": "1.0.0",
+  "description": "Opencode plugin for managing multiple Ollama Cloud API keys with automatic failover",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,5 +25,23 @@
   },
   "peerDependencies": {
     "@opencode-ai/sdk": "latest"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/farseenmanekhan1232/opencode-ollama-multi-auth.git"
+  },
+  "keywords": [
+    "opencode",
+    "ollama",
+    "ollama-cloud",
+    "api-key",
+    "multi-auth",
+    "failover"
+  ],
+  "author": "Farseen",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/farseenmanekhan1232/opencode-ollama-multi-auth/issues"
+  },
+  "homepage": "https://github.com/farseenmanekhan1232/opencode-ollama-multi-auth#readme"
 }
