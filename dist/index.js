@@ -70,7 +70,7 @@ export const OllamaMultiAuth = async (_, options) => {
     }
     return {
         auth: {
-            provider: 'ollama-cloud',
+            provider: 'ollama',
             loader: async () => {
                 return { apiKey: getNextApiKey() };
             },
