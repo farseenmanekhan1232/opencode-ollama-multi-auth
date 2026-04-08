@@ -70,6 +70,10 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     currentKeyIndex = keyState.keys.findIndex(k => k.key === workingKey)
   }
 
+  function isOllamaProvider(providerId?: string): boolean {
+    return providerId === 'ollama' || providerId === 'ollama-cloud' || providerId === 'Ollama Cloud'
+  }
+
   function getNextApiKey(): string {
     const failWindow = config.failWindowMs || 18000000
     const available = keyState.keys.filter(k => !k.failedAt || Date.now() - k.failedAt > failWindow)
@@ -89,7 +93,7 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
 
   return {
     auth: {
-      provider: 'ollama',
+      provider: 'ollama-cloud',
       loader: async () => {
         return { apiKey: getNextApiKey() }
       },
@@ -105,7 +109,10 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       { provider },
       { options }
     ) => {
-      if (provider?.info?.id === 'ollama' || provider?.info?.id === 'ollama-cloud') {
+      const providerId = provider?.info?.id
+      console.log(`[ollama-multi-auth] chat.params - provider: ${providerId}`)
+      
+      if (isOllamaProvider(providerId)) {
         options.apiKey = getNextApiKey()
         console.log('[ollama-multi-auth] Injected API key via chat.params')
       }
