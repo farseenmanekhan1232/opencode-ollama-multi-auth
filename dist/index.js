@@ -53,20 +53,23 @@ export const OllamaMultiAuth = async (_, options) => {
     if (workingKey) {
         currentKeyIndex = keyState.keys.findIndex(k => k.key === workingKey);
     }
+    function getNextApiKey() {
+        const failWindow = config.failWindowMs || 18000000;
+        const available = keyState.keys.filter(k => !k.failedAt || Date.now() - k.failedAt > failWindow);
+        if (available.length === 0) {
+            console.warn('[ollama-multi-auth] All keys failed recently, using first key');
+            return keyState.keys[0]?.key || '';
+        }
+        const nextKey = available[0].key;
+        currentKeyIndex = keyState.keys.findIndex(k => k.key === nextKey);
+        console.log(`[ollama-multi-auth] Using key ${currentKeyIndex + 1}/${keyState.keys.length}`);
+        return nextKey;
+    }
     return {
         auth: {
             provider: 'ollama',
             loader: async () => {
-                const failWindow = config.failWindowMs || 18000000;
-                const available = keyState.keys.filter(k => !k.failedAt || Date.now() - k.failedAt > failWindow);
-                if (available.length === 0) {
-                    console.warn('[ollama-multi-auth] All keys failed recently, using first key');
-                    return { apiKey: keyState.keys[0]?.key || '' };
-                }
-                const nextKey = available[0].key;
-                currentKeyIndex = keyState.keys.findIndex(k => k.key === nextKey);
-                console.log(`[ollama-multi-auth] Using key ${currentKeyIndex + 1}/${keyState.keys.length}`);
-                return { apiKey: nextKey };
+                return { apiKey: getNextApiKey() };
             },
             methods: [
                 {
@@ -75,10 +78,13 @@ export const OllamaMultiAuth = async (_, options) => {
                 },
             ],
         },
-        'tool.execute.after': async ({ tool }, { output }) => {
-            if (tool !== 'ollama' && tool !== 'ollama_chat' && tool !== 'ollama_generate') {
-                return;
+        'chat.params': async ({ provider }, { options }) => {
+            if (provider?.info?.id === 'ollama' || provider?.info?.id === 'ollama-cloud') {
+                options.apiKey = getNextApiKey();
+                console.log('[ollama-multi-auth] Injected API key via chat.params');
             }
+        },
+        'tool.execute.after': async ({ tool, sessionID }, { title, output, metadata }) => {
             const outputStr = typeof output === 'string' ? output : JSON.stringify(output);
             const isAuthError = outputStr.includes('401') ||
                 outputStr.includes('403') ||
@@ -90,6 +96,8 @@ export const OllamaMultiAuth = async (_, options) => {
                 outputStr.includes('rate limit');
             if (isAuthError) {
                 console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed, marking as failed`);
+                console.log(`[ollama-multi-auth] Tool: ${tool}, Session: ${sessionID}`);
+                console.log(`[ollama-multi-auth] Error output: ${outputStr.substring(0, 200)}`);
                 markKeyFailed(keyState, currentKeyIndex);
                 keyState = loadKeyState(uniqueKeys);
                 const newWorkingKey = getWorkingKey(keyState);
