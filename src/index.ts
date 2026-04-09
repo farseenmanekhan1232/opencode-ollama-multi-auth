@@ -155,8 +155,27 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
                   headers
                 })
 
-                if (response.status === 401 || response.status === 403 || response.status === 429) {
+                if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
                   console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with ${response.status}, rotating...`)
+                  markKeyFailed(keyState, currentKeyIndex)
+                  keyState = loadKeyState(uniqueKeys)
+                  saveKeyState(keyState)
+                  continue
+                }
+
+                const clone = response.clone()
+                const responseText = await clone.text()
+                
+                if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
+                  console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with ${response.status}, rotating...`)
+                  markKeyFailed(keyState, currentKeyIndex)
+                  keyState = loadKeyState(uniqueKeys)
+                  saveKeyState(keyState)
+                  continue
+                }
+
+                if (responseText.includes('Too Many Requests') || responseText.includes('usage limit') || responseText.includes('session limit') || responseText.includes('quota')) {
+                  console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with rate limit error, rotating...`)
                   markKeyFailed(keyState, currentKeyIndex)
                   keyState = loadKeyState(uniqueKeys)
                   saveKeyState(keyState)
@@ -189,12 +208,17 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       const isAuthError = 
         outputStr.includes('401') ||
         outputStr.includes('403') ||
+        outputStr.includes('429') ||
+        outputStr.includes('rate limit') ||
+        outputStr.includes('rate_limit') ||
+        outputStr.includes('Too Many Requests') ||
+        outputStr.includes('usage limit') ||
+        outputStr.includes('session limit') ||
+        outputStr.includes('quota') ||
         outputStr.includes('authentication') ||
         outputStr.includes('api key') ||
         outputStr.includes('invalid') ||
-        outputStr.includes('unauthorized') ||
-        outputStr.includes('429') ||
-        outputStr.includes('rate limit')
+        outputStr.includes('unauthorized')
       
       if (isAuthError) {
         console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} marked as failed (detected in tool output)`)
