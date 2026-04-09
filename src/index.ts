@@ -128,6 +128,12 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     const lower = providerId.toLowerCase()
     return lower === 'ollama' || lower === 'ollama-cloud' || lower.includes('ollama')
   }
+  
+  function isOllamaModelProvider(providerID?: string): boolean {
+    if (!providerID) return false
+    const lower = providerID.toLowerCase()
+    return lower === 'ollama' || lower === 'ollama-cloud' || lower.includes('ollama')
+  }
 
   function isAuthError(output: string): boolean {
     const lower = output.toLowerCase()
@@ -175,6 +181,21 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         console.log('[ollama-multi-auth] chat.params set apiKey:', apiKey.substring(0, 20) + '...')
       } else {
         console.log('[ollama-multi-auth] chat.params - not ollama provider, skipping')
+      }
+    },
+
+    'chat.headers': async (
+      { model },
+      { headers }
+    ) => {
+      console.log('[ollama-multi-auth] chat.headers called, model.providerID:', model.providerID)
+      
+      if (isOllamaModelProvider(model.providerID)) {
+        const apiKey = getNextApiKey()
+        headers.authorization = `Bearer ${apiKey}`
+        console.log('[ollama-multi-auth] chat.headers set authorization header')
+      } else {
+        console.log('[ollama-multi-auth] chat.headers - not ollama provider, skipping')
       }
     },
     
