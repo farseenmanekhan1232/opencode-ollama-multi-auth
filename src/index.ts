@@ -1,12 +1,40 @@
 import { Plugin } from '@opencode-ai/plugin'
-import { loadKeyState, saveKeyState, markKeyFailed } from './state.js'
+import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from './state.js'
+import { readFile, writeFile } from 'fs/promises'
+import { existsSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 
 const PROVIDER_ID = 'ollama-multi'
+const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
   failWindowMs?: number
   maxRetries?: number
+}
+
+async function readAuthJson(): Promise<Record<string, any>> {
+  try {
+    const content = await readFile(AUTH_JSON_PATH, 'utf-8')
+    return JSON.parse(content)
+  } catch {
+    return {}
+  }
+}
+
+async function writeAuthJson(auth: Record<string, any>): Promise<void> {
+  await writeFile(AUTH_JSON_PATH, JSON.stringify(auth, null, 2), 'utf-8')
+}
+
+async function updateOllamaMultiKey(key: string): Promise<void> {
+  const auth = await readAuthJson()
+  auth[PROVIDER_ID] = {
+    type: 'api',
+    key: key
+  }
+  await writeAuthJson(auth)
+  console.log('[ollama-multi] Updated auth.json with new key:', key.substring(0, 20) + '...')
 }
 
 function getApiKeysFromConfig(config: OllamaMultiAuthConfig): string[] {
@@ -56,24 +84,22 @@ function deduplicateKeys(keys: string[]): string[] {
   return unique
 }
 
-function isAuthError(status: number, bodyText: string): boolean {
-  if (status === 401 || status === 403 || status === 429) return true
-  const lower = bodyText.toLowerCase()
-  return lower.includes('unauthorized') ||
+function isAuthError(output: string): boolean {
+  const lower = output.toLowerCase()
+  return lower.includes('401') ||
+    lower.includes('403') ||
+    lower.includes('429') ||
+    lower.includes('unauthorized') ||
     lower.includes('invalid') ||
     lower.includes('api key') ||
     lower.includes('authentication') ||
-    lower.includes('rate limit') ||
-    lower.includes('too many requests') ||
-    lower.includes('usage limit') ||
-    lower.includes('quota exceeded')
+    lower.includes('rate limit')
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
-  console.log('[ollama-multi] Plugin loading with options:', JSON.stringify(options))
+  console.log('[ollama-multi] Plugin loading...')
   
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
-  console.log('[ollama-multi] Config extracted:', JSON.stringify(config))
   const maxRetries = config.maxRetries || 5
 
   const configKeys = getApiKeysFromConfig(config)
@@ -81,16 +107,23 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
 
   const allKeys = [...configKeys, ...envKeys]
   const uniqueKeys = deduplicateKeys(allKeys)
-  
-  console.log('[ollama-multi] Keys loaded:', uniqueKeys.length)
 
   if (uniqueKeys.length === 0) {
     console.warn('[ollama-multi] No API keys configured')
     return {}
   }
 
+  console.log(`[ollama-multi] Loaded ${uniqueKeys.length} API keys`)
+
   let keyState = loadKeyState(uniqueKeys)
   let currentKeyIndex = 0
+
+  // Initialize auth.json with first key
+  const firstKey = getWorkingKey(keyState) || uniqueKeys[0]
+  if (firstKey) {
+    await updateOllamaMultiKey(firstKey)
+    console.log('[ollama-multi] Initialized auth.json with first key')
+  }
 
   function getAvailableKeys(): { key: string; index: number }[] {
     const failWindow = config.failWindowMs || 18000000
@@ -120,41 +153,23 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return keyState.keys[0]?.key || ''
   }
 
-  function markCurrentKeyFailed() {
+  async function rotateToNextKey(): Promise<boolean> {
+    console.log(`[ollama-multi] Rotating from key ${currentKeyIndex + 1}...`)
+    
     markKeyFailed(keyState, currentKeyIndex)
     saveKeyState(keyState)
     keyState = loadKeyState(uniqueKeys)
-  }
-
-  async function fetchWithKeyRetry(
-    input: RequestInfo | URL,
-    init?: RequestInit,
-    retryCount = 0
-  ): Promise<Response> {
-    const apiKey = getCurrentKey()
-
-    const headers = new Headers(init?.headers)
-    headers.set('Authorization', `Bearer ${apiKey}`)
-
-    const response = await fetch(input, {
-      ...init,
-      headers
-    })
-
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '')
-      
-      if (isAuthError(response.status, bodyText) && retryCount < maxRetries) {
-        markCurrentKeyFailed()
-        
-        const nextAvailable = getNextAvailableKey()
-        if (nextAvailable) {
-          return fetchWithKeyRetry(input, init, retryCount + 1)
-        }
-      }
+    
+    const nextKey = getWorkingKey(keyState)
+    if (nextKey) {
+      currentKeyIndex = keyState.keys.findIndex(k => k.key === nextKey)
+      await updateOllamaMultiKey(nextKey)
+      console.log(`[ollama-multi] Rotated to key ${currentKeyIndex + 1}:`, nextKey.substring(0, 20) + '...')
+      return true
     }
-
-    return response
+    
+    console.warn('[ollama-multi] No available keys left')
+    return false
   }
 
   return {
@@ -162,14 +177,8 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       provider: PROVIDER_ID,
       loader: async () => {
         const apiKey = getCurrentKey()
-        console.log('[ollama-multi] auth.loader called, returning key:', apiKey.substring(0, 20) + '...')
-        
-        return {
-          apiKey,
-          async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            return fetchWithKeyRetry(input, init)
-          }
-        }
+        console.log('[ollama-multi] auth.loader returning key:', apiKey.substring(0, 20) + '...')
+        return { apiKey }
       },
       methods: [
         {
@@ -177,6 +186,18 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
           label: 'Ollama Multi-Key API',
         },
       ],
+    },
+    
+    'tool.execute.after': async ({ tool }, { output }) => {
+      const outputStr = typeof output === 'string' ? output : JSON.stringify(output)
+      
+      if (isAuthError(outputStr)) {
+        console.log('[ollama-multi] Auth error detected, rotating key...')
+        const rotated = await rotateToNextKey()
+        if (rotated) {
+          console.log('[ollama-multi] Key rotated. Retry the request.')
+        }
+      }
     },
   }
 }
