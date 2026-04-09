@@ -3,6 +3,18 @@ import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from './stat
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
+import { writeFileSync } from 'fs'
+
+const DEBUG_LOG = '/tmp/ollama-plugin-debug.log'
+
+function debugLog(msg: string) {
+  try {
+    const timestamp = new Date().toISOString()
+    writeFileSync(DEBUG_LOG, `[${timestamp}] ${msg}\n`, { flag: 'a' })
+  } catch {
+    // ignore
+  }
+}
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
@@ -68,8 +80,12 @@ function deduplicateKeys(keys: string[]): string[] {
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
+  debugLog('=== PLUGIN EXECUTING ===')
+  console.log('[ollama-multi-auth] === PLUGIN EXECUTING ===')
+  
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
   
+  debugLog('Options: ' + JSON.stringify(options))
   console.log('[ollama-multi-auth] Raw options:', JSON.stringify(options))
   
   const configKeys = extractApiKeysFromConfig(config)

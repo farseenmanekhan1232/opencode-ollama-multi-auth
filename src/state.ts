@@ -1,6 +1,7 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { dirname } from 'path'
 
 interface KeyState {
   key: string
@@ -46,10 +47,9 @@ export function loadKeyState(apiKeys: string[]): KeyStateData {
 
 export function saveKeyState(state: KeyStateData): void {
   try {
-    const dir = join(homedir(), '.opencode')
-    const fs = require('fs')
+    const dir = dirname(STATE_FILE)
     if (!existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
+      mkdirSync(dir, { recursive: true })
     }
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
   } catch (e) {
