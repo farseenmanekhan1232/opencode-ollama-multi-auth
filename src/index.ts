@@ -9,17 +9,12 @@ interface OllamaMultiAuthConfig {
   failWindowMs?: number
 }
 
-interface AuthLoaderResult {
-  apiKey: string
-  fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-}
-
 async function readExistingOllamaCloudKey(): Promise<string | null> {
   try {
     const authPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
     const content = await readFile(authPath, 'utf-8')
-    const auth = JSON.parse(content)
-    return auth['ollama-cloud']?.apiKey || null
+    const auth = JSON.parse(content) as Record<string, { key?: string }>
+    return auth['ollama-cloud']?.key || null
   } catch {
     return null
   }
@@ -77,8 +72,6 @@ function deduplicateKeys(keys: string[]): string[] {
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
-  console.log('[ollama-multi-auth] Plugin loaded, raw options:', JSON.stringify(options).substring(0, 500))
-  
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
 
   const configKeys = extractApiKeysFromConfig(options as Record<string, unknown>)
@@ -131,68 +124,32 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return nextKey.key
   }
 
+  function isOllamaProvider(providerId?: string): boolean {
+    return providerId === 'ollama' || providerId === 'ollama-cloud' || providerId === 'Ollama Cloud'
+  }
+
+  function isAuthError(output: string): boolean {
+    const lower = output.toLowerCase()
+    return lower.includes('401') ||
+      lower.includes('403') ||
+      lower.includes('429') ||
+      lower.includes('rate limit') ||
+      lower.includes('too many requests') ||
+      lower.includes('usage limit') ||
+      lower.includes('session limit') ||
+      lower.includes('quota exceeded') ||
+      lower.includes('authentication') ||
+      lower.includes('api key') ||
+      lower.includes('invalid') ||
+      lower.includes('unauthorized')
+  }
+
   return {
     auth: {
       provider: 'ollama-cloud',
-      loader: async (): Promise<AuthLoaderResult> => {
+      loader: async (getAuth) => {
         const apiKey = getNextApiKey()
-        
-        return {
-          apiKey,
-          async fetch(input, init) {
-            const maxRetries = keyState.keys.length
-            let lastError: Error | null = null
-
-            for (let attempt = 0; attempt < maxRetries; attempt++) {
-              const currentKey = getNextApiKey()
-              
-              const headers = new Headers(init?.headers)
-              headers.set('Authorization', `Bearer ${currentKey}`)
-
-              try {
-                const response = await fetch(input, {
-                  ...init,
-                  headers
-                })
-
-                if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
-                  console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with ${response.status}, rotating...`)
-                  markKeyFailed(keyState, currentKeyIndex)
-                  keyState = loadKeyState(uniqueKeys)
-                  saveKeyState(keyState)
-                  continue
-                }
-
-                const clone = response.clone()
-                const responseText = await clone.text()
-                
-                if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
-                  console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with ${response.status}, rotating...`)
-                  markKeyFailed(keyState, currentKeyIndex)
-                  keyState = loadKeyState(uniqueKeys)
-                  saveKeyState(keyState)
-                  continue
-                }
-
-                if (responseText.includes('Too Many Requests') || responseText.includes('usage limit') || responseText.includes('session limit') || responseText.includes('quota')) {
-                  console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} failed with rate limit error, rotating...`)
-                  markKeyFailed(keyState, currentKeyIndex)
-                  keyState = loadKeyState(uniqueKeys)
-                  saveKeyState(keyState)
-                  continue
-                }
-
-                return response
-              } catch (error) {
-                lastError = error as Error
-                console.log(`[ollama-multi-auth] Request failed: ${error}`)
-                continue
-              }
-            }
-
-            throw lastError || new Error('All API keys failed')
-          }
-        }
+        return { apiKey }
       },
       methods: [
         {
@@ -202,27 +159,25 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       ],
     },
     
+    'chat.params': async (
+      { provider },
+      { options }
+    ) => {
+      const providerId = provider?.info?.id
+      
+      if (isOllamaProvider(providerId)) {
+        const apiKey = getNextApiKey()
+        options.apiKey = apiKey
+      }
+    },
+    
     'tool.execute.after': async ({ tool, sessionID }, { title, output, metadata }) => {
       const outputStr = typeof output === 'string' ? output : JSON.stringify(output)
       
-      const isAuthError = 
-        outputStr.includes('401') ||
-        outputStr.includes('403') ||
-        outputStr.includes('429') ||
-        outputStr.includes('rate limit') ||
-        outputStr.includes('rate_limit') ||
-        outputStr.includes('Too Many Requests') ||
-        outputStr.includes('usage limit') ||
-        outputStr.includes('session limit') ||
-        outputStr.includes('quota') ||
-        outputStr.includes('authentication') ||
-        outputStr.includes('api key') ||
-        outputStr.includes('invalid') ||
-        outputStr.includes('unauthorized')
-      
-      if (isAuthError) {
-        console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} marked as failed (detected in tool output)`)
-        console.log(`[ollama-multi-auth] Tool: ${tool}, Session: ${sessionID}`)
+      if (isAuthError(outputStr)) {
+        console.log(`[ollama-multi-auth] Key ${currentKeyIndex + 1} marked as failed`)
+        console.log(`[ollama-multi-auth] Tool: ${tool}`)
+        
         markKeyFailed(keyState, currentKeyIndex)
         saveKeyState(keyState)
         
