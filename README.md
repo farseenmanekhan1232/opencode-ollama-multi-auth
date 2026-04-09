@@ -5,13 +5,15 @@
 
 Opencode plugin for Ollama Cloud with multiple API keys and automatic failover.
 
+Never run out of API quota again! When one API key fails, the plugin automatically switches to the next one.
+
 ## Features
 
+- **Zero-Config Setup** - Automatic configuration during installation
 - **Multiple API Keys** - Add unlimited API keys for Ollama Cloud
-- **Automatic Failover** - Automatically switch to next key when current one fails (401, 403, 429)
-- **Key Recovery** - Re-enable failed keys after 5 hours (configurable)
-- **Built-in Provider** - Uses the `ollama-multi` provider with pre-configured models
-- **Auto-Setup** - Plugin automatically manages auth.json for you
+- **Automatic Failover** - Automatically switches to next key when current one fails (401, 403, 429)
+- **Auto Recovery** - Re-enables failed keys after 5 hours (configurable)
+- **Seamless Experience** - Works transparently - no manual intervention needed
 
 ## Installation
 
@@ -19,17 +21,92 @@ Opencode plugin for Ollama Cloud with multiple API keys and automatic failover.
 npm install -g opencode-ollama-multi-auth
 ```
 
+That's it! The setup script will run automatically and guide you through configuration.
+
 ## Quick Start
 
-### Step 1: Install the plugin
+After installation, you'll see an interactive prompt:
 
-```bash
-npm install -g opencode-ollama-multi-auth
+```
+🦙 Welcome to opencode-ollama-multi-auth!
+
+This plugin helps you use multiple Ollama Cloud API keys with automatic failover.
+
+Enter your Ollama Cloud API keys (one per line).
+Press Enter twice when done.
+
+API Key 1: your-key-1
+API Key 2: your-key-2
+API Key 3: your-key-3
+
+✅ Setup complete!
+
+✓ Added 3 API key(s)
+✓ Configured opencode.json
+✓ Initialized auth.json
+
+Restart OpenCode to start using ollama-multi models!
 ```
 
-### Step 2: Configure opencode.json
+**Just restart OpenCode and you're ready to go!**
 
-Add to `~/.config/opencode/opencode.json` (global) or your project:
+## Usage
+
+After setup, use any `ollama-multi` model in OpenCode:
+
+```
+opencode
+# Select model: ollama-multi/kimi-k2.5
+# Start chatting!
+```
+
+The plugin will automatically:
+1. Use the first available API key
+2. Detect when a key fails (rate limit, invalid, etc.)
+3. Switch to the next key seamlessly
+4. Re-enable failed keys after 5 hours
+
+## How It Works
+
+### Automatic Key Management
+
+The plugin monitors your Ollama API requests in real-time:
+
+```
+Request 1: Using Key #1 ✅ Success
+Request 2: Using Key #1 ✅ Success
+Request 3: Using Key #1 ❌ Rate limited (429)
+           ↓ Automatic rotation
+Request 3: Using Key #2 ✅ Success
+Request 4: Using Key #2 ✅ Success
+...
+```
+
+### Key States
+
+- **Active**: Currently being used for requests
+- **Failed**: Temporarily disabled after error (re-enables after 5 hours)
+- **Available**: Ready to use when needed
+
+## Managing Your Keys
+
+### Rerun Setup
+
+Need to add more keys or change configuration?
+
+```bash
+# Rerun the interactive setup
+npx opencode-ollama-multi-setup
+
+# Or directly
+opencode-ollama-multi-setup
+```
+
+### Manual Configuration
+
+If you prefer manual setup or need advanced configuration:
+
+**1. Add plugin to `~/.config/opencode/opencode.json`:**
 
 ```json
 {
@@ -52,70 +129,38 @@ Add to `~/.config/opencode/opencode.json` (global) or your project:
       "ollamaMultiAuth": {
         "keys": [
           "your-ollama-api-key-1",
-          "your-ollama-api-key-2",
-          "your-ollama-api-key-3"
-        ]
+          "your-ollama-api-key-2"
+        ],
+        "failWindowMs": 18000000,
+        "maxRetries": 5
       }
     }]
   ]
 }
 ```
 
-### Step 3: Run OpenCode
+**2. Set initial auth key in `~/.local/share/opencode/auth.json`:**
 
-```bash
-opencode
+```json
+{
+  "ollama-multi": {
+    "type": "api",
+    "key": "your-first-ollama-key"
+  }
+}
 ```
 
-The plugin will automatically:
-- Set up auth.json with your first API key
-- Monitor for auth failures
-- Rotate to the next key when one fails
-- Re-enable failed keys after the recovery window
-
-## How It Works
-
-This plugin uses OpenCode's built-in auth system with automatic key management:
-
-1. **Plugin Initialization**: On startup, the plugin writes the first key to `~/.local/share/opencode/auth.json`
-2. **Normal Operation**: OpenCode uses the current key from auth.json for all requests
-3. **Failure Detection**: When a key fails (401/403/429), the plugin detects it via the `tool.execute.after` hook
-4. **Automatic Rotation**: The plugin updates auth.json with the next available key
-5. **Key Recovery**: Failed keys are automatically re-enabled after the configured window (default: 5 hours)
-
-## Configuration Options
+### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `keys` | string[] | [] | Array of API keys to use for rotation |
+| `keys` | string[] | [] | Array of API keys to rotate through |
 | `failWindowMs` | number | 18000000 | Time in ms before retrying a failed key (default: 5 hours) |
-| `maxRetries` | number | 5 | Maximum number of key rotations per request |
+| `maxRetries` | number | 5 | Maximum key rotations per request |
 
-## Adding Multiple Keys
+### Adding Keys via Environment Variables
 
-### Option 1: Plugin Configuration (Recommended)
-
-Add keys to your `opencode.json` plugin configuration:
-
-```json
-"plugin": [
-  ["opencode-ollama-multi-auth", {
-    "ollamaMultiAuth": {
-      "keys": [
-        "key-1",
-        "key-2", 
-        "key-3",
-        "key-4",
-        "key-5"
-      ]
-    }
-  }]
-]
-```
-
-### Option 2: Environment Variables
-
-Set keys in your shell profile:
+You can also set keys in your shell:
 
 ```bash
 export OLLAMA_API_KEY="your-first-key"
@@ -123,55 +168,131 @@ export OLLAMA_API_KEY_1="your-second-key"
 export OLLAMA_API_KEY_2="your-third-key"
 ```
 
-You can combine both methods - the plugin will merge keys from both sources.
+Keys from environment variables are merged with config keys.
 
-## Adding Models
+## Adding More Models
 
-The `ollama-multi` provider requires models to be explicitly defined. Add models under `provider.ollama-multi.models`:
+The `ollama-multi` provider comes with 3 models pre-configured. To add more:
+
+Edit `~/.config/opencode/opencode.json` and add under `provider.ollama-multi.models`:
 
 ```json
-"models": {
-  "model-id": {
-    "id": "model-id",
-    "name": "Display Name",
-    "family": "model-family"
-  }
+"your-model-id": {
+  "id": "your-model-id",
+  "name": "Display Name",
+  "family": "model-family"
 }
 ```
 
+Then use with: `ollama-multi/your-model-id`
+
 ## Available Models
 
-The plugin works with Ollama Cloud models. Some popular ones:
-- `ollama-multi/kimi-k2.5`
-- `ollama-multi/qwen3.5:397b`
-- `ollama-multi/gemma4:31b-cloud`
-
-Add any Ollama Cloud model to your provider config to use it.
-
-## State File
-
-Key failure state is stored in `~/.opencode/ollama-keys-state.json`
+Pre-configured models:
+- `ollama-multi/kimi-k2.5` - Moonshot Kimi K2.5
+- `ollama-multi/qwen3.5:397b` - Alibaba Qwen 3.5 397B
+- `ollama-multi/gemma4:31b-cloud` - Google Gemma 4 31B
 
 ## Troubleshooting
 
 ### "Unauthorized" Error
 
-If you get an "Unauthorized" error:
-
-1. **Check your keys**: Verify they work with curl:
+1. **Verify your keys work**:
    ```bash
    curl -H "Authorization: Bearer YOUR_KEY" https://ollama.com/v1/models
    ```
-2. **Check auth.json**: The plugin should auto-create this at `~/.local/share/opencode/auth.json`
-3. **Restart OpenCode**: After fixing configuration
+
+2. **Check auth.json exists**:
+   ```bash
+   cat ~/.local/share/opencode/auth.json
+   ```
+   Should contain an `ollama-multi` entry.
+
+3. **Restart OpenCode** after any configuration changes
+
+### Setup Script Didn't Run
+
+If the interactive setup didn't run during install:
+
+```bash
+npx opencode-ollama-multi-setup
+```
 
 ### Keys Not Rotating
 
-If keys aren't rotating:
+1. Verify multiple keys are configured:
+   ```bash
+   grep -A5 "ollamaMultiAuth" ~/.config/opencode/opencode.json
+   ```
 
-1. Verify the plugin is loaded: check for `[ollama-multi]` logs in OpenCode's output
-2. Check the state file: `~/.opencode/ollama-keys-state.json`
-3. Ensure you have multiple keys configured
+2. Check plugin is loaded: Look for `[ollama-multi]` logs in OpenCode
+
+3. Verify state file: `~/.opencode/ollama-keys-state.json`
+
+### Understanding Key Rotation
+
+To see rotation in action:
+
+1. Use up one key's quota
+2. Watch the logs (run OpenCode with `--verbose`)
+3. Next request automatically uses next key
+
+## State Management
+
+The plugin maintains two files:
+
+- **`~/.local/share/opencode/auth.json`** - Current active key (managed by plugin)
+- **`~/.opencode/ollama-keys-state.json`** - Key failure history and rotation state
+
+**Don't edit these manually** - the plugin manages them automatically.
+
+## Testing
+
+### Quick Test Script
+
+Use the provided test script to verify key rotation:
+
+```bash
+# Navigate to your plugin directory
+cd /path/to/opencode-ollama-multi-auth
+
+# Run the quick test
+chmod +x scripts/test-with-project.sh
+./scripts/test-with-project.sh
+```
+
+This creates an isolated test environment with:
+- A test project with its own `opencode.json`
+- Mock API keys for testing
+- Interactive menu to:
+  - Start OpenCode TUI
+  - View key status
+  - Manually rotate keys to see the state changes
+
+### Project-Based Testing
+
+The script uses a project-specific `opencode.json` which overrides your global config:
+
+1. Creates a temporary test project directory
+2. Generates mock API keys
+3. Sets up isolated auth.json
+4. Opens OpenCode with the test project
+
+This way your main OpenCode setup remains untouched.
+
+### Manual Key Rotation Test
+
+To test key rotation manually:
+
+```bash
+# Start with debug logging to see rotation
+HOME=/tmp/test-home opencode /path/to/test-project --print-logs --log-level DEBUG
+
+# Watch for logs showing:
+# - [ollama-multi] Auth error detected, rotating key...
+# - [ollama-multi] Rotated to Key #2
+# - [ollama-multi] Updated auth.json with new key
+```
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "opencode-ollama-multi-auth",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Opencode plugin for Ollama Cloud with multiple API keys and automatic failover",
   "type": "module",
   "main": "dist/index.js",
@@ -11,9 +11,18 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "bin": {
+    "opencode-ollama-multi-setup": "./scripts/setup.js"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "postinstall": "node scripts/setup.js"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.0.0",

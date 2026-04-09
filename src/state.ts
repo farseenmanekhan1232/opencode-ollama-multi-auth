@@ -8,7 +8,7 @@ interface KeyState {
   failedAt: number | null
 }
 
-interface KeyStateData {
+export interface KeyStateData {
   keys: KeyState[]
   lastUpdated: number
 }
