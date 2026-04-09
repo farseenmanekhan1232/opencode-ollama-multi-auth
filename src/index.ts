@@ -45,15 +45,11 @@ function getApiKeysFromEnv(): string[] {
   return keys
 }
 
-function extractApiKeysFromConfig(options: Record<string, unknown>): string[] {
+function extractApiKeysFromConfig(config: OllamaMultiAuthConfig): string[] {
   const keys: string[] = []
   
-  if (Array.isArray(options.keys)) {
-    keys.push(...options.keys.filter((k): k is string => typeof k === 'string'))
-  }
-  
-  if (options.key && typeof options.key === 'string') {
-    keys.push(options.key)
+  if (Array.isArray(config.keys)) {
+    keys.push(...config.keys.filter((k): k is string => typeof k === 'string'))
   }
   
   return keys
@@ -73,8 +69,10 @@ function deduplicateKeys(keys: string[]): string[] {
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
-
-  const configKeys = extractApiKeysFromConfig(options as Record<string, unknown>)
+  
+  console.log('[ollama-multi-auth] Raw options:', JSON.stringify(options))
+  
+  const configKeys = extractApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
   const existingKey = await readExistingOllamaCloudKey()
 
