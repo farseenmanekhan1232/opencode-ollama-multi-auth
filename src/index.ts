@@ -16,6 +16,9 @@ interface OllamaMultiAuthConfig {
 
 async function readAuthJson(): Promise<Record<string, any>> {
   try {
+    if (!existsSync(AUTH_JSON_PATH)) {
+      return {}
+    }
     const content = await readFile(AUTH_JSON_PATH, 'utf-8')
     return JSON.parse(content)
   } catch {
@@ -84,16 +87,8 @@ function deduplicateKeys(keys: string[]): string[] {
   return unique
 }
 
-function isAuthError(output: string): boolean {
-  const lower = output.toLowerCase()
-  return lower.includes('401') ||
-    lower.includes('403') ||
-    lower.includes('429') ||
-    lower.includes('unauthorized') ||
-    lower.includes('invalid') ||
-    lower.includes('api key') ||
-    lower.includes('authentication') ||
-    lower.includes('rate limit')
+function isAuthErrorByStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 429
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
@@ -172,13 +167,59 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return false
   }
 
+  async function makeRequestWithRetry(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    attempt = 0
+  ): Promise<Response> {
+    // Read current key from auth.json (ensures we use latest rotated key)
+    const auth = await readAuthJson()
+    const apiKey = auth[PROVIDER_ID]?.key || getCurrentKey()
+    
+    console.log(`[ollama-multi] Request attempt ${attempt + 1} with key:`, apiKey.substring(0, 20) + '...')
+    
+    // Prepare headers with authorization
+    const headers = new Headers(init?.headers)
+    headers.set('Authorization', `Bearer ${apiKey}`)
+    
+    const response = await fetch(input, {
+      ...init,
+      headers
+    })
+    
+    // Check for auth errors by HTTP status code
+    if (isAuthErrorByStatus(response.status)) {
+      console.log(`[ollama-multi] Auth error detected (status ${response.status}), rotating key...`)
+      
+      // Read current key from state (not cached)
+      keyState = loadKeyState(uniqueKeys)
+      const rotated = await rotateToNextKey()
+      
+      if (rotated && attempt < maxRetries) {
+        // Small delay before retry
+        await new Promise(resolve => setTimeout(resolve, 500))
+        return makeRequestWithRetry(input, init, attempt + 1)
+      }
+      
+      console.warn(`[ollama-multi] Max retries (${maxRetries}) reached, returning error`)
+    }
+    
+    return response
+  }
+
   return {
     auth: {
       provider: PROVIDER_ID,
       loader: async () => {
         const apiKey = getCurrentKey()
         console.log('[ollama-multi] auth.loader returning key:', apiKey.substring(0, 20) + '...')
-        return { apiKey }
+        
+        return {
+          apiKey,
+          async fetch(input: RequestInfo | URL, init?: RequestInit) {
+            return makeRequestWithRetry(input, init)
+          }
+        }
       },
       methods: [
         {
@@ -186,18 +227,6 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
           label: 'Ollama Multi-Key API',
         },
       ],
-    },
-    
-    'tool.execute.after': async ({ tool }, { output }) => {
-      const outputStr = typeof output === 'string' ? output : JSON.stringify(output)
-      
-      if (isAuthError(outputStr)) {
-        console.log('[ollama-multi] Auth error detected, rotating key...')
-        const rotated = await rotateToNextKey()
-        if (rotated) {
-          console.log('[ollama-multi] Key rotated. Retry the request.')
-        }
-      }
     },
   }
 }
