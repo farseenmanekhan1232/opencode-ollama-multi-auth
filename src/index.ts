@@ -1,35 +1,22 @@
 import { Plugin } from '@opencode-ai/plugin'
-import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from './state.js'
-import { readFile } from 'fs/promises'
-import { join } from 'path'
-import { homedir } from 'os'
-import { writeFileSync } from 'fs'
+import { loadKeyState, saveKeyState, markKeyFailed } from './state.js'
 
-const DEBUG_LOG = '/tmp/ollama-plugin-debug.log'
-
-function debugLog(msg: string) {
-  try {
-    const timestamp = new Date().toISOString()
-    writeFileSync(DEBUG_LOG, `[${timestamp}] ${msg}\n`, { flag: 'a' })
-  } catch {
-    // ignore
-  }
-}
+const PROVIDER_ID = 'ollama-multi'
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
   failWindowMs?: number
+  maxRetries?: number
 }
 
-async function readExistingOllamaCloudKey(): Promise<string | null> {
-  try {
-    const authPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
-    const content = await readFile(authPath, 'utf-8')
-    const auth = JSON.parse(content) as Record<string, { key?: string }>
-    return auth['ollama-cloud']?.key || null
-  } catch {
-    return null
+function getApiKeysFromConfig(config: OllamaMultiAuthConfig): string[] {
+  const keys: string[] = []
+  
+  if (Array.isArray(config.keys)) {
+    keys.push(...config.keys.filter((k): k is string => typeof k === 'string'))
   }
+  
+  return keys
 }
 
 function getApiKeysFromEnv(): string[] {
@@ -57,16 +44,6 @@ function getApiKeysFromEnv(): string[] {
   return keys
 }
 
-function extractApiKeysFromConfig(config: OllamaMultiAuthConfig): string[] {
-  const keys: string[] = []
-  
-  if (Array.isArray(config.keys)) {
-    keys.push(...config.keys.filter((k): k is string => typeof k === 'string'))
-  }
-  
-  return keys
-}
-
 function deduplicateKeys(keys: string[]): string[] {
   const unique: string[] = []
   const seen = new Set<string>()
@@ -79,36 +56,36 @@ function deduplicateKeys(keys: string[]): string[] {
   return unique
 }
 
+function isAuthError(status: number, bodyText: string): boolean {
+  if (status === 401 || status === 403 || status === 429) return true
+  const lower = bodyText.toLowerCase()
+  return lower.includes('unauthorized') ||
+    lower.includes('invalid') ||
+    lower.includes('api key') ||
+    lower.includes('authentication') ||
+    lower.includes('rate limit') ||
+    lower.includes('too many requests') ||
+    lower.includes('usage limit') ||
+    lower.includes('quota exceeded')
+}
+
 export const OllamaMultiAuth: Plugin = async (_, options) => {
-  debugLog('=== PLUGIN EXECUTING ===')
-  console.log('[ollama-multi-auth] === PLUGIN EXECUTING ===')
-  
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
-  
-  debugLog('Options: ' + JSON.stringify(options))
-  console.log('[ollama-multi-auth] Raw options:', JSON.stringify(options))
-  
-  const configKeys = extractApiKeysFromConfig(config)
+  const maxRetries = config.maxRetries || 5
+
+  const configKeys = getApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
-  const existingKey = await readExistingOllamaCloudKey()
 
-  const allKeys = [
-    ...configKeys,
-    ...envKeys,
-    ...(existingKey ? [existingKey] : [])
-  ]
-
+  const allKeys = [...configKeys, ...envKeys]
   const uniqueKeys = deduplicateKeys(allKeys)
 
   if (uniqueKeys.length === 0) {
-    console.warn('[ollama-multi-auth] No API keys configured')
+    console.warn('[ollama-multi] No API keys configured')
     return {}
   }
 
-  console.log(`[ollama-multi-auth] Loaded ${uniqueKeys.length} API keys (config: ${configKeys.length}, env: ${envKeys.length}, existing: ${existingKey ? 1 : 0})`)
-  console.log('[ollama-multi-auth] Keys:', uniqueKeys.map(k => k.substring(0, 20) + '...').join(', '))
-
   let keyState = loadKeyState(uniqueKeys)
+  let currentKeyIndex = 0
 
   function getAvailableKeys(): { key: string; index: number }[] {
     const failWindow = config.failWindowMs || 18000000
@@ -120,134 +97,80 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       })
   }
 
-  let currentKeyIndex = 0
-
-  function getNextApiKey(): string {
+  function getNextAvailableKey(): { key: string; index: number } | null {
     const available = getAvailableKeys()
-    
     if (available.length === 0) {
-      console.warn('[ollama-multi-auth] All keys failed recently, using first key')
-      currentKeyIndex = 0
-      return keyState.keys[0]?.key || ''
+      return null
+    }
+    return available[0]
+  }
+
+  function getCurrentKey(): string {
+    const available = getNextAvailableKey()
+    if (available) {
+      currentKeyIndex = available.index
+      return available.key
+    }
+    currentKeyIndex = 0
+    return keyState.keys[0]?.key || ''
+  }
+
+  function markCurrentKeyFailed() {
+    markKeyFailed(keyState, currentKeyIndex)
+    saveKeyState(keyState)
+    keyState = loadKeyState(uniqueKeys)
+  }
+
+  async function fetchWithKeyRetry(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    retryCount = 0
+  ): Promise<Response> {
+    const apiKey = getCurrentKey()
+
+    const headers = new Headers(init?.headers)
+    headers.set('Authorization', `Bearer ${apiKey}`)
+
+    const response = await fetch(input, {
+      ...init,
+      headers
+    })
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '')
+      
+      if (isAuthError(response.status, bodyText) && retryCount < maxRetries) {
+        markCurrentKeyFailed()
+        
+        const nextAvailable = getNextAvailableKey()
+        if (nextAvailable) {
+          return fetchWithKeyRetry(input, init, retryCount + 1)
+        }
+      }
     }
 
-    const nextKey = available[0]
-    currentKeyIndex = nextKey.index
-    
-    console.log(`[ollama-multi-auth] Using key ${currentKeyIndex + 1}/${keyState.keys.length} (${keyState.keys[currentKeyIndex].key.substring(0, 20)}...)`)
-    
-    return nextKey.key
-  }
-
-  function isOllamaProvider(providerId?: string): boolean {
-    if (!providerId) return false
-    const lower = providerId.toLowerCase()
-    return lower === 'ollama' || lower === 'ollama-cloud' || lower.includes('ollama')
-  }
-  
-  function isOllamaModelProvider(providerID?: string): boolean {
-    if (!providerID) return false
-    const lower = providerID.toLowerCase()
-    return lower === 'ollama' || lower === 'ollama-cloud' || lower.includes('ollama')
-  }
-
-  function isAuthError(output: string): boolean {
-    const lower = output.toLowerCase()
-    return lower.includes('401') ||
-      lower.includes('403') ||
-      lower.includes('429') ||
-      lower.includes('rate limit') ||
-      lower.includes('too many requests') ||
-      lower.includes('usage limit') ||
-      lower.includes('session limit') ||
-      lower.includes('quota exceeded') ||
-      lower.includes('authentication') ||
-      lower.includes('api key') ||
-      lower.includes('invalid') ||
-      lower.includes('unauthorized')
+    return response
   }
 
   return {
     auth: {
-      provider: 'ollama-cloud',
-      loader: async (getAuth) => {
-        console.log('[ollama-multi-auth] auth.loader called')
-        debugLog('auth.loader called')
-        const apiKey = getNextApiKey()
-        console.log('[ollama-multi-auth] auth.loader returning key:', apiKey.substring(0, 20) + '...')
-        debugLog('auth.loader returning key: ' + apiKey.substring(0, 20) + '...')
-        return { apiKey }
+      provider: PROVIDER_ID,
+      loader: async () => {
+        const apiKey = getCurrentKey()
+        
+        return {
+          apiKey,
+          async fetch(input: RequestInfo | URL, init?: RequestInit) {
+            return fetchWithKeyRetry(input, init)
+          }
+        }
       },
       methods: [
         {
           type: 'api' as const,
-          label: 'Ollama Cloud API Key (Multi-Auth)',
+          label: 'Ollama Multi-Key API',
         },
       ],
-    },
-    
-    'chat.params': async (
-      { provider, model },
-      { options }
-    ) => {
-      console.log('[ollama-multi-auth] chat.params called! provider:', provider, 'model:', model)
-      debugLog('chat.params called! provider: ' + JSON.stringify(provider) + ', model: ' + JSON.stringify(model))
-      
-      const providerId = provider?.info?.id || model?.providerID
-      console.log('[ollama-multi-auth] chat.params providerId:', providerId, 'options.apiKey before:', options.apiKey ? 'set' : 'not set')
-      debugLog('chat.params providerId: ' + providerId)
-      
-      if (isOllamaProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
-        const apiKey = getNextApiKey()
-        options.apiKey = apiKey
-        console.log('[ollama-multi-auth] chat.params set apiKey:', apiKey.substring(0, 20) + '...')
-        debugLog('chat.params set apiKey: ' + apiKey.substring(0, 20) + '...')
-      } else {
-        console.log('[ollama-multi-auth] chat.params - not ollama provider, skipping')
-        debugLog('chat.params - not ollama provider, skipping')
-      }
-    },
-
-    'chat.headers': async (
-      { provider, model },
-      { headers }
-    ) => {
-      console.log('[ollama-multi-auth] chat.headers called! provider:', provider, 'model:', model)
-      debugLog('chat.headers called! provider: ' + JSON.stringify(provider) + ', model: ' + JSON.stringify(model))
-      
-      const providerId = provider?.info?.id || model?.providerID
-      console.log('[ollama-multi-auth] chat.headers providerId:', providerId)
-      debugLog('chat.headers providerId: ' + providerId)
-      
-      if (isOllamaModelProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
-        const apiKey = getNextApiKey()
-        headers.authorization = `Bearer ${apiKey}`
-        console.log('[ollama-multi-auth] chat.headers set authorization header')
-        debugLog('chat.headers set authorization header: ' + apiKey.substring(0, 20) + '...')
-      } else {
-        console.log('[ollama-multi-auth] chat.headers - not ollama provider, skipping')
-        debugLog('chat.headers - not ollama provider, skipping')
-      }
-    },
-    
-    'tool.execute.after': async ({ tool, sessionID }, { title, output, metadata }) => {
-      const outputStr = typeof output === 'string' ? output : JSON.stringify(output)
-      console.log('[ollama-multi-auth] tool.execute.after called, tool:', tool, 'output preview:', outputStr.substring(0, 100))
-      
-      if (isAuthError(outputStr)) {
-        console.log('[ollama-multi-auth] Key ' + (currentKeyIndex + 1) + ' marked as failed')
-        console.log('[ollama-multi-auth] Tool: ' + tool)
-        
-        markKeyFailed(keyState, currentKeyIndex)
-        saveKeyState(keyState)
-        
-        keyState = loadKeyState(uniqueKeys)
-        const newWorkingKey = getWorkingKey(keyState)
-        if (newWorkingKey) {
-          currentKeyIndex = keyState.keys.findIndex(k => k.key === newWorkingKey)
-          console.log('[ollama-multi-auth] Rotated to key index:', currentKeyIndex)
-        }
-      }
     },
   }
 }
