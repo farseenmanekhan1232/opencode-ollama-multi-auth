@@ -70,7 +70,10 @@ function isAuthError(status: number, bodyText: string): boolean {
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
+  console.log('[ollama-multi] Plugin loading with options:', JSON.stringify(options))
+  
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
+  console.log('[ollama-multi] Config extracted:', JSON.stringify(config))
   const maxRetries = config.maxRetries || 5
 
   const configKeys = getApiKeysFromConfig(config)
@@ -78,6 +81,8 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
 
   const allKeys = [...configKeys, ...envKeys]
   const uniqueKeys = deduplicateKeys(allKeys)
+  
+  console.log('[ollama-multi] Keys loaded:', uniqueKeys.length)
 
   if (uniqueKeys.length === 0) {
     console.warn('[ollama-multi] No API keys configured')
@@ -157,6 +162,7 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       provider: PROVIDER_ID,
       loader: async () => {
         const apiKey = getCurrentKey()
+        console.log('[ollama-multi] auth.loader called, returning key:', apiKey.substring(0, 20) + '...')
         
         return {
           apiKey,
