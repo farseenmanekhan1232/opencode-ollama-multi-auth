@@ -172,8 +172,10 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       provider: 'ollama-cloud',
       loader: async (getAuth) => {
         console.log('[ollama-multi-auth] auth.loader called')
+        debugLog('auth.loader called')
         const apiKey = getNextApiKey()
         console.log('[ollama-multi-auth] auth.loader returning key:', apiKey.substring(0, 20) + '...')
+        debugLog('auth.loader returning key: ' + apiKey.substring(0, 20) + '...')
         return { apiKey }
       },
       methods: [
@@ -188,15 +190,21 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       { provider, model },
       { options }
     ) => {
+      console.log('[ollama-multi-auth] chat.params called! provider:', provider, 'model:', model)
+      debugLog('chat.params called! provider: ' + JSON.stringify(provider) + ', model: ' + JSON.stringify(model))
+      
       const providerId = provider?.info?.id || model?.providerID
-      console.log('[ollama-multi-auth] chat.params called, providerId:', providerId, 'options.apiKey before:', options.apiKey ? 'set' : 'not set')
+      console.log('[ollama-multi-auth] chat.params providerId:', providerId, 'options.apiKey before:', options.apiKey ? 'set' : 'not set')
+      debugLog('chat.params providerId: ' + providerId)
       
       if (isOllamaProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
         const apiKey = getNextApiKey()
         options.apiKey = apiKey
         console.log('[ollama-multi-auth] chat.params set apiKey:', apiKey.substring(0, 20) + '...')
+        debugLog('chat.params set apiKey: ' + apiKey.substring(0, 20) + '...')
       } else {
         console.log('[ollama-multi-auth] chat.params - not ollama provider, skipping')
+        debugLog('chat.params - not ollama provider, skipping')
       }
     },
 
@@ -204,15 +212,21 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       { provider, model },
       { headers }
     ) => {
+      console.log('[ollama-multi-auth] chat.headers called! provider:', provider, 'model:', model)
+      debugLog('chat.headers called! provider: ' + JSON.stringify(provider) + ', model: ' + JSON.stringify(model))
+      
       const providerId = provider?.info?.id || model?.providerID
-      console.log('[ollama-multi-auth] chat.headers called, providerId:', providerId, 'model:', model?.providerID)
+      console.log('[ollama-multi-auth] chat.headers providerId:', providerId)
+      debugLog('chat.headers providerId: ' + providerId)
       
       if (isOllamaModelProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
         const apiKey = getNextApiKey()
         headers.authorization = `Bearer ${apiKey}`
         console.log('[ollama-multi-auth] chat.headers set authorization header')
+        debugLog('chat.headers set authorization header: ' + apiKey.substring(0, 20) + '...')
       } else {
         console.log('[ollama-multi-auth] chat.headers - not ollama provider, skipping')
+        debugLog('chat.headers - not ollama provider, skipping')
       }
     },
     
