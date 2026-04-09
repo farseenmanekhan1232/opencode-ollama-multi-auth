@@ -185,13 +185,13 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     },
     
     'chat.params': async (
-      { provider },
+      { provider, model },
       { options }
     ) => {
-      const providerId = provider?.info?.id
+      const providerId = provider?.info?.id || model?.providerID
       console.log('[ollama-multi-auth] chat.params called, providerId:', providerId, 'options.apiKey before:', options.apiKey ? 'set' : 'not set')
       
-      if (isOllamaProvider(providerId)) {
+      if (isOllamaProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
         const apiKey = getNextApiKey()
         options.apiKey = apiKey
         console.log('[ollama-multi-auth] chat.params set apiKey:', apiKey.substring(0, 20) + '...')
@@ -201,12 +201,13 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     },
 
     'chat.headers': async (
-      { model },
+      { provider, model },
       { headers }
     ) => {
-      console.log('[ollama-multi-auth] chat.headers called, model.providerID:', model.providerID)
+      const providerId = provider?.info?.id || model?.providerID
+      console.log('[ollama-multi-auth] chat.headers called, providerId:', providerId, 'model:', model?.providerID)
       
-      if (isOllamaModelProvider(model.providerID)) {
+      if (isOllamaModelProvider(providerId) || isOllamaModelProvider(model?.providerID)) {
         const apiKey = getNextApiKey()
         headers.authorization = `Bearer ${apiKey}`
         console.log('[ollama-multi-auth] chat.headers set authorization header')
