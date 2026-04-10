@@ -207,6 +207,18 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       }
       
       console.warn(`[ollama-multi] Max retries (${maxRetries}) reached, returning error`)
+      
+      // Parse the error message from the response if possible to include in the thrown error
+      let errorMsg = ''
+      try {
+        const body = await response.clone().json()
+        errorMsg = body.error || body.message || 'Rate limit exceeded'
+      } catch {
+        errorMsg = await response.clone().text().catch(() => 'Rate limit exceeded')
+      }
+      
+      // Throw a clear error so the user knows exactly what happened, and to stop SDK retries
+      throw new Error(`[ollama-multi] ALL API KEYS EXHAUSTED! Cycled through keys but all returned auth/rate-limit errors. Please add fresh keys from new accounts. Last API error: ${errorMsg}`)
     }
     
     return response

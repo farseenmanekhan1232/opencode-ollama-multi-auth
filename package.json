@@ -1,6 +1,6 @@
 {
   "name": "opencode-ollama-multi-auth",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Opencode plugin for Ollama Cloud with multiple API keys and automatic failover",
   "type": "module",
   "main": "dist/index.js",
