@@ -155,16 +155,17 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     saveKeyState(keyState)
     keyState = loadKeyState(uniqueKeys)
     
-    const nextKey = getWorkingKey(keyState)
-    if (nextKey) {
-      currentKeyIndex = keyState.keys.findIndex(k => k.key === nextKey)
-      await updateOllamaMultiKey(nextKey)
-      console.log(`[ollama-multi] Rotated to key ${currentKeyIndex + 1}:`, nextKey.substring(0, 20) + '...')
-      return true
+    const available = getAvailableKeys()
+    if (available.length === 0) {
+      console.warn('[ollama-multi] No available keys left')
+      return false
     }
     
-    console.warn('[ollama-multi] No available keys left')
-    return false
+    const nextKey = available[0].key
+    currentKeyIndex = available[0].index
+    await updateOllamaMultiKey(nextKey)
+    console.log(`[ollama-multi] Rotated to key ${currentKeyIndex + 1}:`, nextKey.substring(0, 20) + '...')
+    return true
   }
 
   async function makeRequestWithRetry(
