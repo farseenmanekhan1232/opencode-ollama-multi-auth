@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from './src/state.js'
+import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from '../dist/state.js'
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'

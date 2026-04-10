@@ -193,6 +193,11 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       
       // Read current key from state (not cached)
       keyState = loadKeyState(uniqueKeys)
+      
+      // Ensure currentKeyIndex matches the key we just used before marking it failed
+      currentKeyIndex = keyState.keys.findIndex(k => k.key === apiKey)
+      if (currentKeyIndex === -1) currentKeyIndex = 0
+      
       const rotated = await rotateToNextKey()
       
       if (rotated && attempt < maxRetries) {
