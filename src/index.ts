@@ -11,7 +11,6 @@ const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json
 interface OllamaMultiAuthConfig {
   keys?: string[]
   failWindowMs?: number
-  maxRetries?: number
   providerId?: string
 }
 
@@ -38,17 +37,13 @@ async function updateOllamaMultiKey(key: string, targetProviderId: string): Prom
     key: key
   }
   await writeAuthJson(auth)
-  console.log(`[${targetProviderId}] Updated auth.json with new key:`, key.substring(0, 20) + '...')
 }
 
 function getApiKeysFromConfig(config: OllamaMultiAuthConfig): string[] {
-  const keys: string[] = []
-  
   if (Array.isArray(config.keys)) {
-    keys.push(...config.keys.filter((k): k is string => typeof k === 'string'))
+    return config.keys.filter((k): k is string => typeof k === 'string')
   }
-  
-  return keys
+  return []
 }
 
 function getApiKeysFromEnv(): string[] {
@@ -96,12 +91,10 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
   console.log('[ollama-multi] Plugin loading...')
   
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
-  const maxRetries = config.maxRetries || 5
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
 
   const configKeys = getApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
-
   const allKeys = [...configKeys, ...envKeys]
   const uniqueKeys = deduplicateKeys(allKeys)
 
@@ -110,17 +103,13 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return {}
   }
 
-  console.log(`[${providerId}] Loaded ${uniqueKeys.length} API keys`)
-  uniqueKeys.forEach((k, i) => console.log(`[${providerId}] Key ${i}: ${k.substring(0, 10)}...`))
+  console.log(`[${providerId}] Loaded ${uniqueKeys.length} keys`)
 
   let keyState = loadKeyState(uniqueKeys)
-  let currentKeyIndex = 0
 
-  // Initialize auth.json with first key
   const firstKey = getWorkingKey(keyState) || uniqueKeys[0]
   if (firstKey) {
     await updateOllamaMultiKey(firstKey, providerId)
-    console.log(`[${providerId}] Initialized auth.json with first key`)
   }
 
   function getAvailableKeys(): { key: string; index: number }[] {
@@ -133,127 +122,74 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       })
   }
 
-  function getNextAvailableKey(): { key: string; index: number } | null {
+  function getCurrentKeyFromState(): string {
     const available = getAvailableKeys()
-    if (available.length === 0) {
-      return null
+    if (available.length > 0) {
+      return available[0].key
     }
-    return available[0]
-  }
-
-  function getCurrentKey(): string {
-    const available = getNextAvailableKey()
-    if (available) {
-      currentKeyIndex = available.index
-      return available.key
-    }
-    currentKeyIndex = 0
     return keyState.keys[0]?.key || ''
   }
 
-  // Simple lock to prevent concurrent rotations
-  let rotationLock: Promise<boolean> | null = null
+  let rotating = false
 
-  async function rotateToNextKey(failedKey: string): Promise<boolean> {
-    if (rotationLock) {
-      console.log(`[${providerId}] Rotation already in progress, waiting...`)
-      return rotationLock
-    }
-
-    rotationLock = (async () => {
-      try {
-        console.log(`[${providerId}] Rotating away from key...`)
-        
-        // Refresh state from disk to ensure we have the latest
+  async function rotateToNextKey(failedKey: string): Promise<void> {
+    if (rotating) return
+    rotating = true
+    
+    try {
+      console.log(`[${providerId}] Rotating from failed key...`)
+      
+      keyState = loadKeyState(uniqueKeys)
+      
+      const failedIndex = keyState.keys.findIndex(k => k.key === failedKey)
+      if (failedIndex !== -1) {
+        markKeyFailed(keyState, failedIndex)
+        saveKeyState(keyState)
         keyState = loadKeyState(uniqueKeys)
-        
-        const failedIndex = keyState.keys.findIndex(k => k.key === failedKey)
-        if (failedIndex !== -1) {
-          markKeyFailed(keyState, failedIndex)
-          saveKeyState(keyState)
-          keyState = loadKeyState(uniqueKeys)
-        }
-        
-        const available = getAvailableKeys()
-        if (available.length === 0) {
-          console.warn('[ollama-multi] No available keys left')
-          return false
-        }
-        
+      }
+      
+      const available = getAvailableKeys()
+      if (available.length > 0) {
         const nextKey = available[0].key
-        currentKeyIndex = available[0].index
         await updateOllamaMultiKey(nextKey, providerId)
-        console.log(`[${providerId}] Rotated to key ${currentKeyIndex + 1}:`, nextKey.substring(0, 20) + '...')
-        return true
-      } finally {
-        rotationLock = null
+        console.log(`[${providerId}] Rotated to next key`)
+      } else {
+        console.warn('[ollama-multi] No available keys')
       }
-    })()
-
-    return rotationLock
-  }
-
-  async function makeRequestWithRetry(
-    input: RequestInfo | URL,
-    init?: RequestInit,
-    attempt = 0
-  ): Promise<Response> {
-    // Read current key from auth.json (ensures we use latest rotated key)
-    const auth = await readAuthJson()
-    const apiKey = auth[providerId]?.key || getCurrentKey()
-    
-    console.log(`[${providerId}] Request attempt ${attempt + 1} with key:`, apiKey.substring(0, 20) + '...')
-    
-    // Prepare headers with authorization
-    const headers = new Headers(init?.headers)
-    headers.set('Authorization', `Bearer ${apiKey}`)
-    
-    const response = await fetch(input, {
-      ...init,
-      headers
-    })
-    
-    // Check for auth errors by HTTP status code
-    if (isAuthErrorByStatus(response.status)) {
-      console.log(`[${providerId}] Auth error detected (status ${response.status}), rotating key...`)
-      
-      const rotated = await rotateToNextKey(apiKey)
-      
-      if (rotated && attempt < maxRetries) {
-        // Small delay before retry
-        await new Promise(resolve => setTimeout(resolve, 500))
-        return makeRequestWithRetry(input, init, attempt + 1)
-      }
-      
-      console.warn(`[${providerId}] Max retries (${maxRetries}) reached, returning error`)
-      
-      // Parse the error message from the response if possible to include in the thrown error
-      let errorMsg = ''
-      try {
-        const body = await response.clone().json()
-        errorMsg = body.error || body.message || 'Rate limit exceeded'
-      } catch {
-        errorMsg = await response.clone().text().catch(() => 'Rate limit exceeded')
-      }
-      
-      // Throw a clear error so the user knows exactly what happened, and to stop SDK retries
-      throw new Error(`[${providerId}] ALL API KEYS EXHAUSTED! Cycled through keys but all returned auth/rate-limit errors. Please add fresh keys from new accounts. Last API error: ${errorMsg}`)
+    } finally {
+      rotating = false
     }
-    
-    return response
   }
 
   return {
     auth: {
       provider: providerId,
       loader: async () => {
-        const apiKey = getCurrentKey()
-        console.log(`[${providerId}] auth.loader returning key:`, apiKey.substring(0, 20) + '...')
+        const currentKey = getCurrentKeyFromState()
+        console.log(`[${providerId}] loader key:`, currentKey.substring(0, 15) + '...')
         
         return {
-          apiKey,
+          apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            return makeRequestWithRetry(input, init)
+            const authData = await readAuthJson()
+            const currentKey = authData[providerId]?.key || getCurrentKeyFromState()
+            
+            const headers = new Headers(init?.headers)
+            headers.delete('authorization')
+            headers.delete('Authorization')
+            headers.set('Authorization', `Bearer ${currentKey}`)
+            
+            const response = await fetch(input, {
+              ...init,
+              headers
+            })
+            
+            if (isAuthErrorByStatus(response.status)) {
+              console.log(`[${providerId}] Error ${response.status}, rotating...`)
+              await rotateToNextKey(currentKey)
+            }
+            
+            return response
           }
         }
       },
