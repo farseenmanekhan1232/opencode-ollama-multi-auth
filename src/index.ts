@@ -130,13 +130,15 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return keyState.keys[0]?.key || ''
   }
 
-  let rotating = false
+  let rotationLock: Promise<void> | null = null
 
   async function rotateToNextKey(failedKey: string): Promise<void> {
-    if (rotating) return
-    rotating = true
+    if (rotationLock) {
+      await rotationLock
+      return
+    }
     
-    try {
+    rotationLock = (async () => {
       console.log(`[${providerId}] Rotating from failed key...`)
       
       keyState = loadKeyState(uniqueKeys)
@@ -154,10 +156,14 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         await updateOllamaMultiKey(nextKey, providerId)
         console.log(`[${providerId}] Rotated to next key`)
       } else {
-        console.warn('[ollama-multi] No available keys')
+        console.warn(`[${providerId}] No available keys`)
       }
+    })()
+
+    try {
+      await rotationLock
     } finally {
-      rotating = false
+      rotationLock = null
     }
   }
 
@@ -171,25 +177,34 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            const authData = await readAuthJson()
-            const currentKey = authData[providerId]?.key || getCurrentKeyFromState()
+            let attempt = 0
+            const maxAttempts = uniqueKeys.length
             
-            const headers = new Headers(init?.headers)
-            headers.delete('authorization')
-            headers.delete('Authorization')
-            headers.set('Authorization', `Bearer ${currentKey}`)
-            
-            const response = await fetch(input, {
-              ...init,
-              headers
-            })
-            
-            if (isAuthErrorByStatus(response.status)) {
-              console.log(`[${providerId}] Error ${response.status}, rotating...`)
-              await rotateToNextKey(currentKey)
+            while (attempt < maxAttempts) {
+              const authData = await readAuthJson()
+              const currentKey = authData[providerId]?.key || getCurrentKeyFromState()
+              
+              const headers = new Headers(init?.headers)
+              headers.delete('authorization')
+              headers.delete('Authorization')
+              headers.set('Authorization', `Bearer ${currentKey}`)
+              
+              const response = await fetch(input, {
+                ...init,
+                headers
+              })
+              
+              if (isAuthErrorByStatus(response.status)) {
+                console.log(`[${providerId}] Error ${response.status} on attempt ${attempt + 1}, rotating...`)
+                await rotateToNextKey(currentKey)
+                attempt++
+                continue
+              }
+              
+              return response
             }
             
-            return response
+            throw new Error(`[${providerId}] ALL API KEYS EXHAUSTED! Cycled through ${maxAttempts} keys but all returned rate-limit or auth errors. Please add fresh keys.`)
           }
         }
       },
