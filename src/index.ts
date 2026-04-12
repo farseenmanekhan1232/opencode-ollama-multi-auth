@@ -88,8 +88,6 @@ function isAuthErrorByStatus(status: number): boolean {
 }
 
 export const OllamaMultiAuth: Plugin = async (_, options) => {
-  console.log('[ollama-multi] Plugin loading...')
-  
   const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
 
@@ -99,11 +97,8 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
   const uniqueKeys = deduplicateKeys(allKeys)
 
   if (uniqueKeys.length === 0) {
-    console.warn(`[${providerId}] No API keys configured`)
     return {}
   }
-
-  console.log(`[${providerId}] Loaded ${uniqueKeys.length} keys`)
 
   let keyState = loadKeyState(uniqueKeys)
 
@@ -139,8 +134,6 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     }
     
     rotationLock = (async () => {
-      console.log(`[${providerId}] Rotating from failed key...`)
-      
       keyState = loadKeyState(uniqueKeys)
       
       const failedIndex = keyState.keys.findIndex(k => k.key === failedKey)
@@ -154,9 +147,6 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       if (available.length > 0) {
         const nextKey = available[0].key
         await updateOllamaMultiKey(nextKey, providerId)
-        console.log(`[${providerId}] Rotated to next key`)
-      } else {
-        console.warn(`[${providerId}] No available keys`)
       }
     })()
 
@@ -172,7 +162,6 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       provider: providerId,
       loader: async () => {
         const currentKey = getCurrentKeyFromState()
-        console.log(`[${providerId}] loader key:`, currentKey.substring(0, 15) + '...')
         
         return {
           apiKey: '',
@@ -195,7 +184,6 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
               })
               
               if (isAuthErrorByStatus(response.status)) {
-                console.log(`[${providerId}] Error ${response.status} on attempt ${attempt + 1}, rotating...`)
                 await rotateToNextKey(currentKey)
                 attempt++
                 continue
