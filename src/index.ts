@@ -1,5 +1,4 @@
 import { Plugin } from '@opencode-ai/plugin'
-import { loadKeyState, saveKeyState, markKeyFailed, getWorkingKey } from './state.js'
 import { readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -10,7 +9,6 @@ const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
-  failWindowMs?: number
   providerId?: string
 }
 
@@ -100,60 +98,45 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     return {}
   }
 
-  let keyState = loadKeyState(uniqueKeys)
-
-  const firstKey = getWorkingKey(keyState) || uniqueKeys[0]
-  if (firstKey) {
-    await updateOllamaMultiKey(firstKey, providerId)
+  if (uniqueKeys[0]) {
+    await updateOllamaMultiKey(uniqueKeys[0], providerId)
   }
 
-  function getAvailableKeys(): { key: string; index: number }[] {
-    const failWindow = config.failWindowMs || 18000000
-    return keyState.keys
-      .map((k, i) => ({ key: k.key, index: i }))
-      .filter(k => {
-        const state = keyState.keys[k.index]
-        return !state.failedAt || Date.now() - state.failedAt > failWindow
-      })
-  }
+  let failedKeys = new Set<string>()
+  let currentKeyIndex = 0
 
-  function getCurrentKeyFromState(): string {
-    const available = getAvailableKeys()
-    if (available.length > 0) {
-      return available[0].key
+  function getCurrentKey(): string {
+    while (currentKeyIndex < uniqueKeys.length) {
+      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
+        return uniqueKeys[currentKeyIndex]
+      }
+      currentKeyIndex++
     }
-    return keyState.keys[0]?.key || ''
+    return uniqueKeys[0] || ''
   }
-
-  let rotationLock: Promise<void> | null = null
 
   async function rotateToNextKey(failedKey: string): Promise<void> {
-    if (rotationLock) {
-      await rotationLock
-      return
+    const failedIndex = uniqueKeys.indexOf(failedKey)
+    if (failedIndex !== -1) {
+      failedKeys.add(failedKey)
     }
     
-    rotationLock = (async () => {
-      keyState = loadKeyState(uniqueKeys)
-      
-      const failedIndex = keyState.keys.findIndex(k => k.key === failedKey)
-      if (failedIndex !== -1) {
-        markKeyFailed(keyState, failedIndex)
-        saveKeyState(keyState)
-        keyState = loadKeyState(uniqueKeys)
+    currentKeyIndex = failedIndex + 1
+    while (currentKeyIndex < uniqueKeys.length) {
+      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
+        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+        return
       }
-      
-      const available = getAvailableKeys()
-      if (available.length > 0) {
-        const nextKey = available[0].key
-        await updateOllamaMultiKey(nextKey, providerId)
+      currentKeyIndex++
+    }
+    
+    currentKeyIndex = 0
+    while (currentKeyIndex < uniqueKeys.length) {
+      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
+        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+        return
       }
-    })()
-
-    try {
-      await rotationLock
-    } finally {
-      rotationLock = null
+      currentKeyIndex++
     }
   }
 
@@ -161,17 +144,13 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     auth: {
       provider: providerId,
       loader: async () => {
-        const currentKey = getCurrentKeyFromState()
-        
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
             let attempt = 0
-            const maxAttempts = uniqueKeys.length
             
-            while (attempt < maxAttempts) {
-              const authData = await readAuthJson()
-              const currentKey = authData[providerId]?.key || getCurrentKeyFromState()
+            while (attempt < uniqueKeys.length) {
+              const currentKey = getCurrentKey()
               
               const headers = new Headers(init?.headers)
               headers.delete('authorization')
@@ -192,7 +171,7 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
               return response
             }
             
-            throw new Error(`[${providerId}] ALL API KEYS EXHAUSTED! Cycled through ${maxAttempts} keys but all returned rate-limit or auth errors. Please add fresh keys.`)
+            throw new Error(`[${providerId}] ALL API KEYS EXHAUSTED! All ${uniqueKeys.length} keys have failed. Please add fresh keys.`)
           }
         }
       },
