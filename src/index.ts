@@ -112,16 +112,21 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       }
       currentKeyIndex++
     }
+    currentKeyIndex = 0
+    failedKeys.clear()
+    while (currentKeyIndex < uniqueKeys.length) {
+      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
+        return uniqueKeys[currentKeyIndex]
+      }
+      currentKeyIndex++
+    }
     return uniqueKeys[0] || ''
   }
 
   async function rotateToNextKey(failedKey: string): Promise<void> {
-    const failedIndex = uniqueKeys.indexOf(failedKey)
-    if (failedIndex !== -1) {
-      failedKeys.add(failedKey)
-    }
+    failedKeys.add(failedKey)
     
-    currentKeyIndex = failedIndex + 1
+    currentKeyIndex++
     while (currentKeyIndex < uniqueKeys.length) {
       if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
         await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
@@ -147,9 +152,7 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            let attempt = 0
-            
-            while (attempt < uniqueKeys.length) {
+            while (true) {
               const currentKey = getCurrentKey()
               
               const headers = new Headers(init?.headers)
@@ -164,14 +167,11 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
               
               if (isAuthErrorByStatus(response.status)) {
                 await rotateToNextKey(currentKey)
-                attempt++
                 continue
               }
               
               return response
             }
-            
-            throw new Error(`[${providerId}] ALL API KEYS EXHAUSTED! All ${uniqueKeys.length} keys have failed. Please add fresh keys.`)
           }
         }
       },
