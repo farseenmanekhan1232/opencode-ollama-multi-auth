@@ -112,37 +112,22 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
       }
       currentKeyIndex++
     }
-    currentKeyIndex = 0
-    failedKeys.clear()
-    while (currentKeyIndex < uniqueKeys.length) {
-      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
-        return uniqueKeys[currentKeyIndex]
-      }
-      currentKeyIndex++
-    }
     return uniqueKeys[0] || ''
   }
 
   async function rotateToNextKey(failedKey: string): Promise<void> {
     failedKeys.add(failedKey)
-    
-    currentKeyIndex++
-    while (currentKeyIndex < uniqueKeys.length) {
-      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
-        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
-        return
-      }
-      currentKeyIndex++
+    currentKeyIndex = currentKeyIndex + 1
+    if (currentKeyIndex >= uniqueKeys.length) {
+      currentKeyIndex = 0
     }
-    
-    currentKeyIndex = 0
-    while (currentKeyIndex < uniqueKeys.length) {
-      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
-        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
-        return
-      }
+    while (failedKeys.has(uniqueKeys[currentKeyIndex])) {
       currentKeyIndex++
+      if (currentKeyIndex >= uniqueKeys.length) {
+        currentKeyIndex = 0
+      }
     }
+    await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
   }
 
   return {
@@ -152,7 +137,9 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            while (true) {
+            let attempts = 0
+            
+            while (attempts < uniqueKeys.length) {
               const currentKey = getCurrentKey()
               
               const headers = new Headers(init?.headers)
@@ -167,11 +154,14 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
               
               if (isAuthErrorByStatus(response.status)) {
                 await rotateToNextKey(currentKey)
+                attempts++
                 continue
               }
               
               return response
             }
+            
+            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys have rate limit errors. Please wait and retry later.`)
           }
         }
       },
