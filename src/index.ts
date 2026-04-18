@@ -1,15 +1,107 @@
 import { Plugin } from '@opencode-ai/plugin'
-import { readFile, writeFile } from 'fs/promises'
+import { readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
 const DEFAULT_PROVIDER_ID = 'ollama-multi'
 const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
+const PLUGIN_CONFIG_DIR = join(homedir(), '.config', 'opencode')
+const PLUGIN_CONFIG_JSON_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.json')
+const PLUGIN_CONFIG_JSONC_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.jsonc')
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
   providerId?: string
+}
+
+function stripJsonComments(input: string): string {
+  let output = ''
+  let i = 0
+  let inString = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  while (i < input.length) {
+    const current = input[i]
+    const next = input[i + 1]
+
+    if (inLineComment) {
+      if (current === '\n') {
+        inLineComment = false
+        output += current
+      }
+      i++
+      continue
+    }
+
+    if (inBlockComment) {
+      if (current === '*' && next === '/') {
+        inBlockComment = false
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+
+    if (!inString && current === '/' && next === '/') {
+      inLineComment = true
+      i += 2
+      continue
+    }
+
+    if (!inString && current === '/' && next === '*') {
+      inBlockComment = true
+      i += 2
+      continue
+    }
+
+    if (current === '"' && input[i - 1] !== '\\') {
+      inString = !inString
+    }
+
+    output += current
+    i++
+  }
+
+  return output
+}
+
+function parseJsonOrJsonc(content: string): OllamaMultiAuthConfig {
+  const withoutComments = stripJsonComments(content)
+  const withoutTrailingCommas = withoutComments.replace(/,\s*([}\]])/g, '$1')
+  return JSON.parse(withoutTrailingCommas)
+}
+
+async function ensurePluginConfigExists(): Promise<void> {
+  if (existsSync(PLUGIN_CONFIG_JSON_PATH) || existsSync(PLUGIN_CONFIG_JSONC_PATH)) {
+    return
+  }
+
+  await mkdir(PLUGIN_CONFIG_DIR, { recursive: true })
+  const initialConfig: OllamaMultiAuthConfig = {
+    providerId: DEFAULT_PROVIDER_ID,
+    keys: [],
+  }
+  await writeFile(PLUGIN_CONFIG_JSON_PATH, JSON.stringify(initialConfig, null, 2), 'utf-8')
+}
+
+async function readPluginConfig(): Promise<OllamaMultiAuthConfig> {
+  const path = existsSync(PLUGIN_CONFIG_JSONC_PATH)
+    ? PLUGIN_CONFIG_JSONC_PATH
+    : PLUGIN_CONFIG_JSON_PATH
+
+  if (!existsSync(path)) {
+    return {}
+  }
+
+  try {
+    const content = await readFile(path, 'utf-8')
+    return parseJsonOrJsonc(content)
+  } catch {
+    return {}
+  }
 }
 
 async function readAuthJson(): Promise<Record<string, any>> {
@@ -85,8 +177,9 @@ function isAuthErrorByStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 429
 }
 
-export const OllamaMultiAuth: Plugin = async (_, options) => {
-  const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
+export const OllamaMultiAuth: Plugin = async () => {
+  await ensurePluginConfigExists()
+  const config = await readPluginConfig()
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
 
   const configKeys = getApiKeysFromConfig(config)

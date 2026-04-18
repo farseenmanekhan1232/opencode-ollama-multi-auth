@@ -86,18 +86,22 @@ class TestEnvironment {
         }
       },
       plugin: [
-        ['opencode-ollama-multi-auth', {
-          ollamaMultiAuth: {
-            keys: keys,
-            failWindowMs: 5000  // 5 seconds for fast testing
-          }
-        }]
+        'opencode-ollama-multi-auth'
       ]
     };
 
     writeFileSync(
       join(this.testDir, '.config', 'opencode', 'opencode.json'),
       JSON.stringify(config, null, 2)
+    );
+
+    // Write plugin-specific config file
+    writeFileSync(
+      join(this.testDir, '.config', 'opencode', 'ollama-multi-auth.json'),
+      JSON.stringify({
+        providerId: 'ollama-multi',
+        keys
+      }, null, 2)
     );
 
     // Write initial auth.json with first key

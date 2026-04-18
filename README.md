@@ -20,7 +20,7 @@ npm install -g opencode-ollama-multi-auth
 
 ## Configuration
 
-Add the plugin to your `~/.config/opencode/opencode.json`:
+1) Register the plugin in `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -37,18 +37,19 @@ Add the plugin to your `~/.config/opencode/opencode.json`:
       }
     }
   },
-  "plugin": [
-    ["opencode-ollama-multi-auth", {
-      "ollamaMultiAuth": {
-        "keys": [
-          "your-ollama-api-key-1",
-          "your-ollama-api-key-2",
-          "your-ollama-api-key-3"
-        ],
-        "failWindowMs": 18000000,
-        "maxRetries": 5
-      }
-    }]
+  "plugin": ["opencode-ollama-multi-auth"]
+}
+```
+
+2) Configure this plugin in its own file: `~/.config/opencode/ollama-multi-auth.json` (or `.jsonc`):
+
+```json
+{
+  "providerId": "ollama-multi",
+  "keys": [
+    "your-ollama-api-key-1",
+    "your-ollama-api-key-2",
+    "your-ollama-api-key-3"
   ]
 }
 ```
@@ -58,8 +59,6 @@ Add the plugin to your `~/.config/opencode/opencode.json`:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `keys` | string[] | [] | Array of API keys to rotate through |
-| `failWindowMs` | number | 18000000 | Time in ms before retrying a failed key (default: 5 hours) |
-| `maxRetries` | number | 5 | Maximum key rotations per request |
 | `providerId` | string | "ollama-multi" | Provider ID to manage (for custom providers) |
 
 ## Environment Variables
@@ -72,7 +71,7 @@ export OLLAMA_API_KEY_1="your-second-key"
 export OLLAMA_API_KEY_2="your-third-key"
 ```
 
-Keys from environment variables are merged with config keys.
+Keys from environment variables are merged with keys from `ollama-multi-auth.json/.jsonc`.
 
 ## How It Works
 
@@ -105,7 +104,7 @@ cd node_modules/opencode-ollama-multi-auth
 node scripts/mock-server.js
 ```
 
-Then configure a test provider in opencode.json pointing to `http://127.0.0.1:11435/v1` with test keys.
+Then configure a test provider in opencode.json pointing to `http://127.0.0.1:11435/v1` and put test keys in `ollama-multi-auth.json`.
 
 ## Available Models
 
