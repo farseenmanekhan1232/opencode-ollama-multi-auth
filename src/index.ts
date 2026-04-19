@@ -1,15 +1,145 @@
 import { Plugin } from '@opencode-ai/plugin'
-import { readFile, writeFile } from 'fs/promises'
+import { readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
 const DEFAULT_PROVIDER_ID = 'ollama-multi'
+const DEFAULT_MAX_RETRIES = 5
+const DEFAULT_FAIL_WINDOW_MS = 18000000
 const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
+const STATE_DIR = join(homedir(), '.opencode')
+const FAILED_KEYS_STATE_PATH = join(STATE_DIR, 'ollama-keys-state.json')
+const PLUGIN_CONFIG_JSON_PATH = join(homedir(), '.config', 'opencode', 'ollama-multi-auth.json')
+const PLUGIN_CONFIG_JSONC_PATH = join(homedir(), '.config', 'opencode', 'ollama-multi-auth.jsonc')
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
   providerId?: string
+  maxRetries?: number
+  failWindowMs?: number
+}
+
+interface FailedKeysStateFile {
+  providers?: Record<string, Record<string, number>>
+}
+
+function isQuoteEscaped(input: string, quoteIndex: number): boolean {
+  let backslashes = 0
+  let i = quoteIndex - 1
+  while (i >= 0 && input[i] === '\\') {
+    backslashes++
+    i--
+  }
+  return backslashes % 2 === 1
+}
+
+function stripJsonComments(input: string): string {
+  let output = ''
+  let i = 0
+  let inString = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  while (i < input.length) {
+    const current = input[i]
+    const next = input[i + 1]
+
+    if (inLineComment) {
+      if (current === '\n') {
+        inLineComment = false
+        output += current
+      }
+      i++
+      continue
+    }
+
+    if (inBlockComment) {
+      if (current === '*' && next === '/') {
+        inBlockComment = false
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+
+    if (!inString && current === '/' && next === '/') {
+      inLineComment = true
+      i += 2
+      continue
+    }
+
+    if (!inString && current === '/' && next === '*') {
+      inBlockComment = true
+      i += 2
+      continue
+    }
+
+    if (current === '"' && !isQuoteEscaped(input, i)) {
+      inString = !inString
+    }
+
+    output += current
+    i++
+  }
+
+  return output
+}
+
+function removeTrailingCommas(input: string): string {
+  let output = ''
+  let inString = false
+
+  for (let i = 0; i < input.length; i++) {
+    const current = input[i]
+
+    if (current === '"' && !isQuoteEscaped(input, i)) {
+      inString = !inString
+      output += current
+      continue
+    }
+
+    if (!inString && current === ',') {
+      let j = i + 1
+      while (j < input.length && /\s/.test(input[j])) {
+        j++
+      }
+      const next = input[j]
+      if (next === '}' || next === ']') {
+        continue
+      }
+    }
+
+    output += current
+  }
+
+  return output
+}
+
+function parseJsonOrJsonc(content: string): OllamaMultiAuthConfig {
+  const withoutComments = stripJsonComments(content)
+  const withoutTrailingCommas = removeTrailingCommas(withoutComments)
+  return JSON.parse(withoutTrailingCommas)
+}
+
+async function readPluginConfig(): Promise<OllamaMultiAuthConfig> {
+  const path = existsSync(PLUGIN_CONFIG_JSONC_PATH)
+    ? PLUGIN_CONFIG_JSONC_PATH
+    : PLUGIN_CONFIG_JSON_PATH
+
+  if (!existsSync(path)) {
+    return {}
+  }
+
+  try {
+    const content = await readFile(path, 'utf-8')
+    return parseJsonOrJsonc(content)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[ollama-multi-auth] Failed to parse config file at ${path}: ${message}`)
+    return {}
+  }
 }
 
 async function readAuthJson(): Promise<Record<string, any>> {
@@ -28,8 +158,60 @@ async function writeAuthJson(auth: Record<string, any>): Promise<void> {
   await writeFile(AUTH_JSON_PATH, JSON.stringify(auth, null, 2), 'utf-8')
 }
 
+async function readFailedKeysStateFile(): Promise<FailedKeysStateFile> {
+  try {
+    if (!existsSync(FAILED_KEYS_STATE_PATH)) {
+      return {}
+    }
+    const content = await readFile(FAILED_KEYS_STATE_PATH, 'utf-8')
+    const parsed = JSON.parse(content)
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+    return parsed as FailedKeysStateFile
+  } catch {
+    return {}
+  }
+}
+
+async function readFailedKeysForProvider(providerId: string): Promise<Map<string, number>> {
+  const state = await readFailedKeysStateFile()
+  const providerState = state.providers?.[providerId]
+  const entries = Object.entries(providerState || {})
+  const map = new Map<string, number>()
+
+  for (const [key, failedAt] of entries) {
+    if (typeof key !== 'string') {
+      continue
+    }
+    if (typeof failedAt !== 'number' || !Number.isFinite(failedAt)) {
+      continue
+    }
+    map.set(key, failedAt)
+  }
+
+  return map
+}
+
+async function writeFailedKeysForProvider(providerId: string, failedKeys: Map<string, number>): Promise<void> {
+  const state = await readFailedKeysStateFile()
+  const providers = state.providers || {}
+  providers[providerId] = Object.fromEntries(failedKeys)
+
+  await mkdir(STATE_DIR, { recursive: true })
+  await writeFile(
+    FAILED_KEYS_STATE_PATH,
+    JSON.stringify({ providers }, null, 2),
+    'utf-8',
+  )
+}
+
 async function updateOllamaMultiKey(key: string, targetProviderId: string): Promise<void> {
   const auth = await readAuthJson()
+  const current = auth[targetProviderId]
+  if (current?.type === 'api' && current?.key === key) {
+    return
+  }
   auth[targetProviderId] = {
     type: 'api',
     key: key
@@ -85,9 +267,33 @@ function isAuthErrorByStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 429
 }
 
-export const OllamaMultiAuth: Plugin = async (_, options) => {
-  const config = (options?.ollamaMultiAuth as OllamaMultiAuthConfig) || {}
+function getMaxRetries(config: OllamaMultiAuthConfig): number {
+  const value = config.maxRetries
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_MAX_RETRIES
+  }
+  if (value < 0) {
+    return 0
+  }
+  return Math.floor(value)
+}
+
+function getFailWindowMs(config: OllamaMultiAuthConfig): number {
+  const value = config.failWindowMs
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_FAIL_WINDOW_MS
+  }
+  if (value < 0) {
+    return 0
+  }
+  return Math.floor(value)
+}
+
+export const OllamaMultiAuth: Plugin = async () => {
+  const config = await readPluginConfig()
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
+  const maxRetries = getMaxRetries(config)
+  const failWindowMs = getFailWindowMs(config)
 
   const configKeys = getApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
@@ -102,32 +308,76 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
     await updateOllamaMultiKey(uniqueKeys[0], providerId)
   }
 
-  let failedKeys = new Set<string>()
-  let currentKeyIndex = 0
-
-  function getCurrentKey(): string {
-    while (currentKeyIndex < uniqueKeys.length) {
-      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
-        return uniqueKeys[currentKeyIndex]
-      }
-      currentKeyIndex++
+  const persistedFailedKeys = await readFailedKeysForProvider(providerId)
+  const allowedKeys = new Set(uniqueKeys)
+  const failedKeys = new Map<string, number>()
+  for (const [key, failedAt] of persistedFailedKeys.entries()) {
+    if (allowedKeys.has(key)) {
+      failedKeys.set(key, failedAt)
     }
-    return uniqueKeys[0] || ''
+  }
+  if (failedKeys.size !== persistedFailedKeys.size) {
+    await writeFailedKeysForProvider(providerId, failedKeys)
   }
 
-  async function rotateToNextKey(failedKey: string): Promise<void> {
-    failedKeys.add(failedKey)
-    currentKeyIndex = currentKeyIndex + 1
-    if (currentKeyIndex >= uniqueKeys.length) {
-      currentKeyIndex = 0
+  let currentKeyIndex = 0
+
+  function isKeyAvailable(key: string, now: number): boolean {
+    const failedAt = failedKeys.get(key)
+    if (failedAt === undefined) {
+      return true
     }
-    while (failedKeys.has(uniqueKeys[currentKeyIndex])) {
-      currentKeyIndex++
-      if (currentKeyIndex >= uniqueKeys.length) {
-        currentKeyIndex = 0
+    if (now - failedAt >= failWindowMs) {
+      failedKeys.delete(key)
+      return true
+    }
+    return false
+  }
+
+  async function syncFailedKeysState(): Promise<void> {
+    await writeFailedKeysForProvider(providerId, failedKeys)
+  }
+
+  function getCurrentKey(): string {
+    if (uniqueKeys.length === 0) {
+      return ''
+    }
+
+    const now = Date.now()
+    let scanned = 0
+    let index = currentKeyIndex
+
+    while (scanned < uniqueKeys.length) {
+      const key = uniqueKeys[index]
+      if (isKeyAvailable(key, now)) {
+        currentKeyIndex = index
+        return key
       }
+      index = (index + 1) % uniqueKeys.length
+      scanned++
     }
-    await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+
+    return ''
+  }
+
+  async function rotateToNextKey(failedKey: string): Promise<boolean> {
+    failedKeys.set(failedKey, Date.now())
+    await syncFailedKeysState()
+
+    const now = Date.now()
+    let scanned = 0
+    let nextIndex = currentKeyIndex
+    while (scanned < uniqueKeys.length) {
+      nextIndex = (nextIndex + 1) % uniqueKeys.length
+      if (isKeyAvailable(uniqueKeys[nextIndex], now)) {
+        currentKeyIndex = nextIndex
+        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+        return true
+      }
+      scanned++
+    }
+
+    return false
   }
 
   return {
@@ -137,10 +387,14 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            let attempts = 0
+            let rotations = 0
             
-            while (attempts < uniqueKeys.length) {
+            while (true) {
               const currentKey = getCurrentKey()
+              await syncFailedKeysState()
+              if (!currentKey) {
+                break
+              }
               
               const headers = new Headers(init?.headers)
               headers.delete('authorization')
@@ -153,15 +407,23 @@ export const OllamaMultiAuth: Plugin = async (_, options) => {
               })
               
               if (isAuthErrorByStatus(response.status)) {
-                await rotateToNextKey(currentKey)
-                attempts++
+                if (rotations >= maxRetries) {
+                  break
+                }
+
+                const rotated = await rotateToNextKey(currentKey)
+                if (!rotated) {
+                  break
+                }
+
+                rotations++
                 continue
               }
               
               return response
             }
             
-            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys have rate limit errors. Please wait and retry later.`)
+            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys failed with auth/rate-limit errors, maxRetries (${maxRetries}) was reached, or all failed keys are still inside failWindowMs (${failWindowMs}). Please wait and retry later.`)
           }
         }
       },

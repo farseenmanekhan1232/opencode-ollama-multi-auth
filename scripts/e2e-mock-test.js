@@ -87,17 +87,20 @@ server.listen(PORT, async () => {
         }
       },
       plugin: [
-        [join(process.cwd(), 'dist', 'index.js'), {
-          ollamaMultiAuth: {
-            keys: keys,
-            failWindowMs: 5000,
-            maxRetries: 5
-          }
-        }]
+        join(process.cwd(), 'dist', 'index.js')
       ]
     };
     
     writeFileSync(join(configDir, 'opencode.json'), JSON.stringify(config, null, 2));
+
+    // Write plugin-specific config file
+    writeFileSync(
+      join(configDir, 'ollama-multi-auth.json'),
+      JSON.stringify({
+        providerId: 'ollama-multi',
+        keys
+      }, null, 2)
+    );
     
     // Write initial auth.json
     writeFileSync(join(shareDir, 'auth.json'), JSON.stringify({
