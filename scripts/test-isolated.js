@@ -14,8 +14,7 @@ import {
   mkdirSync,
   existsSync,
   rmSync,
-  readFileSync,
-  copyFileSync
+  readFileSync
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -35,7 +34,6 @@ function question(prompt) {
 class TestEnvironment {
   constructor() {
     this.testDir = null;
-    this.originalHome = process.env.HOME;
   }
 
   create() {

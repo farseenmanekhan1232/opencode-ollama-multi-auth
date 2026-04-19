@@ -5,6 +5,8 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 const DEFAULT_PROVIDER_ID = 'ollama-multi'
+const DEFAULT_MAX_RETRIES = 5
+const DEFAULT_FAIL_WINDOW_MS = 18000000
 const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
 const PLUGIN_CONFIG_DIR = join(homedir(), '.config', 'opencode')
 const PLUGIN_CONFIG_JSON_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.json')
@@ -124,6 +126,10 @@ async function writeAuthJson(auth: Record<string, any>): Promise<void> {
 
 async function updateOllamaMultiKey(key: string, targetProviderId: string): Promise<void> {
   const auth = await readAuthJson()
+  const current = auth[targetProviderId]
+  if (current?.type === 'api' && current?.key === key) {
+    return
+  }
   auth[targetProviderId] = {
     type: 'api',
     key: key
@@ -182,7 +188,7 @@ function isAuthErrorByStatus(status: number): boolean {
 function getMaxRetries(config: OllamaMultiAuthConfig): number {
   const value = config.maxRetries
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return 5
+    return DEFAULT_MAX_RETRIES
   }
   if (value < 0) {
     return 0
@@ -193,7 +199,7 @@ function getMaxRetries(config: OllamaMultiAuthConfig): number {
 function getFailWindowMs(config: OllamaMultiAuthConfig): number {
   const value = config.failWindowMs
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return 18000000
+    return DEFAULT_FAIL_WINDOW_MS
   }
   if (value < 0) {
     return 0
@@ -221,7 +227,7 @@ export const OllamaMultiAuth: Plugin = async () => {
     await updateOllamaMultiKey(uniqueKeys[0], providerId)
   }
 
-  let failedKeys = new Map<string, number>()
+  const failedKeys = new Map<string, number>()
   let currentKeyIndex = 0
 
   function isKeyAvailable(key: string, now: number): boolean {
