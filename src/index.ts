@@ -149,7 +149,9 @@ async function readPluginConfig(): Promise<OllamaMultiAuthConfig> {
   try {
     const content = await readFile(path, 'utf-8')
     return parseJsonOrJsonc(content)
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[ollama-multi-auth] Failed to parse config file at ${path}: ${message}`)
     return {}
   }
 }
