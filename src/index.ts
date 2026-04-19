@@ -19,6 +19,16 @@ interface OllamaMultiAuthConfig {
   failWindowMs?: number
 }
 
+function isQuoteEscaped(input: string, quoteIndex: number): boolean {
+  let backslashes = 0
+  let i = quoteIndex - 1
+  while (i >= 0 && input[i] === '\\') {
+    backslashes++
+    i--
+  }
+  return backslashes % 2 === 1
+}
+
 function stripJsonComments(input: string): string {
   let output = ''
   let i = 0
@@ -61,7 +71,7 @@ function stripJsonComments(input: string): string {
       continue
     }
 
-    if (current === '"' && input[i - 1] !== '\\') {
+    if (current === '"' && !isQuoteEscaped(input, i)) {
       inString = !inString
     }
 
@@ -72,9 +82,39 @@ function stripJsonComments(input: string): string {
   return output
 }
 
+function removeTrailingCommas(input: string): string {
+  let output = ''
+  let inString = false
+
+  for (let i = 0; i < input.length; i++) {
+    const current = input[i]
+
+    if (current === '"' && !isQuoteEscaped(input, i)) {
+      inString = !inString
+      output += current
+      continue
+    }
+
+    if (!inString && current === ',') {
+      let j = i + 1
+      while (j < input.length && /\s/.test(input[j])) {
+        j++
+      }
+      const next = input[j]
+      if (next === '}' || next === ']') {
+        continue
+      }
+    }
+
+    output += current
+  }
+
+  return output
+}
+
 function parseJsonOrJsonc(content: string): OllamaMultiAuthConfig {
   const withoutComments = stripJsonComments(content)
-  const withoutTrailingCommas = withoutComments.replace(/,\s*([}\]])/g, '$1')
+  const withoutTrailingCommas = removeTrailingCommas(withoutComments)
   return JSON.parse(withoutTrailingCommas)
 }
 
