@@ -8,6 +8,8 @@ const DEFAULT_PROVIDER_ID = 'ollama-multi'
 const DEFAULT_MAX_RETRIES = 5
 const DEFAULT_FAIL_WINDOW_MS = 18000000
 const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
+const STATE_DIR = join(homedir(), '.opencode')
+const FAILED_KEYS_STATE_PATH = join(STATE_DIR, 'ollama-keys-state.json')
 const PLUGIN_CONFIG_DIR = join(homedir(), '.config', 'opencode')
 const PLUGIN_CONFIG_JSON_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.json')
 const PLUGIN_CONFIG_JSONC_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.jsonc')
@@ -17,6 +19,10 @@ interface OllamaMultiAuthConfig {
   providerId?: string
   maxRetries?: number
   failWindowMs?: number
+}
+
+interface FailedKeysStateFile {
+  providers?: Record<string, Record<string, number>>
 }
 
 function isQuoteEscaped(input: string, quoteIndex: number): boolean {
@@ -164,6 +170,54 @@ async function writeAuthJson(auth: Record<string, any>): Promise<void> {
   await writeFile(AUTH_JSON_PATH, JSON.stringify(auth, null, 2), 'utf-8')
 }
 
+async function readFailedKeysStateFile(): Promise<FailedKeysStateFile> {
+  try {
+    if (!existsSync(FAILED_KEYS_STATE_PATH)) {
+      return {}
+    }
+    const content = await readFile(FAILED_KEYS_STATE_PATH, 'utf-8')
+    const parsed = JSON.parse(content)
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+    return parsed as FailedKeysStateFile
+  } catch {
+    return {}
+  }
+}
+
+async function readFailedKeysForProvider(providerId: string): Promise<Map<string, number>> {
+  const state = await readFailedKeysStateFile()
+  const providerState = state.providers?.[providerId]
+  const entries = Object.entries(providerState || {})
+  const map = new Map<string, number>()
+
+  for (const [key, failedAt] of entries) {
+    if (typeof key !== 'string') {
+      continue
+    }
+    if (typeof failedAt !== 'number' || !Number.isFinite(failedAt)) {
+      continue
+    }
+    map.set(key, failedAt)
+  }
+
+  return map
+}
+
+async function writeFailedKeysForProvider(providerId: string, failedKeys: Map<string, number>): Promise<void> {
+  const state = await readFailedKeysStateFile()
+  const providers = state.providers || {}
+  providers[providerId] = Object.fromEntries(failedKeys)
+
+  await mkdir(STATE_DIR, { recursive: true })
+  await writeFile(
+    FAILED_KEYS_STATE_PATH,
+    JSON.stringify({ providers }, null, 2),
+    'utf-8',
+  )
+}
+
 async function updateOllamaMultiKey(key: string, targetProviderId: string): Promise<void> {
   const auth = await readAuthJson()
   const current = auth[targetProviderId]
@@ -267,7 +321,18 @@ export const OllamaMultiAuth: Plugin = async () => {
     await updateOllamaMultiKey(uniqueKeys[0], providerId)
   }
 
+  const persistedFailedKeys = await readFailedKeysForProvider(providerId)
+  const allowedKeys = new Set(uniqueKeys)
   const failedKeys = new Map<string, number>()
+  for (const [key, failedAt] of persistedFailedKeys.entries()) {
+    if (allowedKeys.has(key)) {
+      failedKeys.set(key, failedAt)
+    }
+  }
+  if (failedKeys.size !== persistedFailedKeys.size) {
+    await writeFailedKeysForProvider(providerId, failedKeys)
+  }
+
   let currentKeyIndex = 0
 
   function isKeyAvailable(key: string, now: number): boolean {
@@ -280,6 +345,10 @@ export const OllamaMultiAuth: Plugin = async () => {
       return true
     }
     return false
+  }
+
+  async function syncFailedKeysState(): Promise<void> {
+    await writeFailedKeysForProvider(providerId, failedKeys)
   }
 
   function getCurrentKey(): string {
@@ -306,6 +375,7 @@ export const OllamaMultiAuth: Plugin = async () => {
 
   async function rotateToNextKey(failedKey: string): Promise<boolean> {
     failedKeys.set(failedKey, Date.now())
+    await syncFailedKeysState()
 
     const now = Date.now()
     let scanned = 0
@@ -334,6 +404,7 @@ export const OllamaMultiAuth: Plugin = async () => {
             
             while (true) {
               const currentKey = getCurrentKey()
+              await syncFailedKeysState()
               if (!currentKey) {
                 break
               }
