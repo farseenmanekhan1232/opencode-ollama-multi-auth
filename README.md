@@ -46,6 +46,7 @@ npm install -g opencode-ollama-multi-auth
 ```json
 {
   "providerId": "ollama-multi",
+  "maxRetries": 5,
   "keys": [
     "your-ollama-api-key-1",
     "your-ollama-api-key-2",

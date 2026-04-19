@@ -13,6 +13,7 @@ const PLUGIN_CONFIG_JSONC_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.json
 interface OllamaMultiAuthConfig {
   keys?: string[]
   providerId?: string
+  maxRetries?: number
 }
 
 function stripJsonComments(input: string): string {
@@ -177,10 +178,22 @@ function isAuthErrorByStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 429
 }
 
+function getMaxRetries(config: OllamaMultiAuthConfig): number {
+  const value = config.maxRetries
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 5
+  }
+  if (value < 0) {
+    return 0
+  }
+  return Math.floor(value)
+}
+
 export const OllamaMultiAuth: Plugin = async () => {
   await ensurePluginConfigExists()
   const config = await readPluginConfig()
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
+  const maxRetries = getMaxRetries(config)
 
   const configKeys = getApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
@@ -199,28 +212,25 @@ export const OllamaMultiAuth: Plugin = async () => {
   let currentKeyIndex = 0
 
   function getCurrentKey(): string {
-    while (currentKeyIndex < uniqueKeys.length) {
-      if (!failedKeys.has(uniqueKeys[currentKeyIndex])) {
-        return uniqueKeys[currentKeyIndex]
-      }
-      currentKeyIndex++
-    }
-    return uniqueKeys[0] || ''
+    return uniqueKeys[currentKeyIndex] || ''
   }
 
-  async function rotateToNextKey(failedKey: string): Promise<void> {
+  async function rotateToNextKey(failedKey: string): Promise<boolean> {
     failedKeys.add(failedKey)
-    currentKeyIndex = currentKeyIndex + 1
-    if (currentKeyIndex >= uniqueKeys.length) {
-      currentKeyIndex = 0
-    }
-    while (failedKeys.has(uniqueKeys[currentKeyIndex])) {
-      currentKeyIndex++
-      if (currentKeyIndex >= uniqueKeys.length) {
-        currentKeyIndex = 0
+
+    let scanned = 0
+    let nextIndex = currentKeyIndex
+    while (scanned < uniqueKeys.length) {
+      nextIndex = (nextIndex + 1) % uniqueKeys.length
+      if (!failedKeys.has(uniqueKeys[nextIndex])) {
+        currentKeyIndex = nextIndex
+        await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+        return true
       }
+      scanned++
     }
-    await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
+
+    return false
   }
 
   return {
@@ -230,10 +240,13 @@ export const OllamaMultiAuth: Plugin = async () => {
         return {
           apiKey: '',
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
-            let attempts = 0
+            let rotations = 0
             
-            while (attempts < uniqueKeys.length) {
+            while (true) {
               const currentKey = getCurrentKey()
+              if (!currentKey) {
+                break
+              }
               
               const headers = new Headers(init?.headers)
               headers.delete('authorization')
@@ -246,15 +259,23 @@ export const OllamaMultiAuth: Plugin = async () => {
               })
               
               if (isAuthErrorByStatus(response.status)) {
-                await rotateToNextKey(currentKey)
-                attempts++
+                if (rotations >= maxRetries) {
+                  break
+                }
+
+                const rotated = await rotateToNextKey(currentKey)
+                if (!rotated) {
+                  break
+                }
+
+                rotations++
                 continue
               }
               
               return response
             }
             
-            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys have rate limit errors. Please wait and retry later.`)
+            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys failed with auth/rate-limit errors or maxRetries (${maxRetries}) was reached. Please wait and retry later.`)
           }
         }
       },

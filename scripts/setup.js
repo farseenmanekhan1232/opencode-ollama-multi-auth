@@ -96,6 +96,7 @@ async function setup() {
       await ensureDir(join(homedir(), '.config', 'opencode'));
       await writeFile(PLUGIN_CONFIG_PATH, JSON.stringify({
         providerId: 'ollama-multi',
+        maxRetries: 5,
         keys: []
       }, null, 2));
       console.log(`✓ Created ${PLUGIN_CONFIG_PATH}`);
@@ -129,6 +130,7 @@ async function setup() {
   await ensureDir(join(homedir(), '.config', 'opencode'));
   await writeFile(PLUGIN_CONFIG_PATH, JSON.stringify({
     providerId: 'ollama-multi',
+    maxRetries: 5,
     keys
   }, null, 2));
 
