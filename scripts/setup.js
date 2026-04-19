@@ -97,6 +97,7 @@ async function setup() {
       await writeFile(PLUGIN_CONFIG_PATH, JSON.stringify({
         providerId: 'ollama-multi',
         maxRetries: 5,
+        failWindowMs: 18000000,
         keys: []
       }, null, 2));
       console.log(`✓ Created ${PLUGIN_CONFIG_PATH}`);
@@ -131,6 +132,7 @@ async function setup() {
   await writeFile(PLUGIN_CONFIG_PATH, JSON.stringify({
     providerId: 'ollama-multi',
     maxRetries: 5,
+    failWindowMs: 18000000,
     keys
   }, null, 2));
 

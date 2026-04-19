@@ -47,6 +47,7 @@ npm install -g opencode-ollama-multi-auth
 {
   "providerId": "ollama-multi",
   "maxRetries": 5,
+  "failWindowMs": 18000000,
   "keys": [
     "your-ollama-api-key-1",
     "your-ollama-api-key-2",
@@ -60,6 +61,8 @@ npm install -g opencode-ollama-multi-auth
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `keys` | string[] | [] | Array of API keys to rotate through |
+| `failWindowMs` | number | 18000000 | Time in ms before retrying a failed key (default: 5 hours) |
+| `maxRetries` | number | 5 | Maximum key rotations per request |
 | `providerId` | string | "ollama-multi" | Provider ID to manage (for custom providers) |
 
 ## Environment Variables

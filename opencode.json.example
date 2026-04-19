@@ -1,6 +1,7 @@
 {
   "providerId": "ollama-multi",
   "maxRetries": 5,
+  "failWindowMs": 18000000,
   "keys": [
     "sk-your-first-api-key",
     "sk-your-second-api-key",

@@ -14,6 +14,7 @@ interface OllamaMultiAuthConfig {
   keys?: string[]
   providerId?: string
   maxRetries?: number
+  failWindowMs?: number
 }
 
 function stripJsonComments(input: string): string {
@@ -189,11 +190,23 @@ function getMaxRetries(config: OllamaMultiAuthConfig): number {
   return Math.floor(value)
 }
 
+function getFailWindowMs(config: OllamaMultiAuthConfig): number {
+  const value = config.failWindowMs
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 18000000
+  }
+  if (value < 0) {
+    return 0
+  }
+  return Math.floor(value)
+}
+
 export const OllamaMultiAuth: Plugin = async () => {
   await ensurePluginConfigExists()
   const config = await readPluginConfig()
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
   const maxRetries = getMaxRetries(config)
+  const failWindowMs = getFailWindowMs(config)
 
   const configKeys = getApiKeysFromConfig(config)
   const envKeys = getApiKeysFromEnv()
@@ -208,21 +221,52 @@ export const OllamaMultiAuth: Plugin = async () => {
     await updateOllamaMultiKey(uniqueKeys[0], providerId)
   }
 
-  let failedKeys = new Set<string>()
+  let failedKeys = new Map<string, number>()
   let currentKeyIndex = 0
 
+  function isKeyAvailable(key: string, now: number): boolean {
+    const failedAt = failedKeys.get(key)
+    if (failedAt === undefined) {
+      return true
+    }
+    if (now - failedAt >= failWindowMs) {
+      failedKeys.delete(key)
+      return true
+    }
+    return false
+  }
+
   function getCurrentKey(): string {
-    return uniqueKeys[currentKeyIndex] || ''
+    if (uniqueKeys.length === 0) {
+      return ''
+    }
+
+    const now = Date.now()
+    let scanned = 0
+    let index = currentKeyIndex
+
+    while (scanned < uniqueKeys.length) {
+      const key = uniqueKeys[index]
+      if (isKeyAvailable(key, now)) {
+        currentKeyIndex = index
+        return key
+      }
+      index = (index + 1) % uniqueKeys.length
+      scanned++
+    }
+
+    return ''
   }
 
   async function rotateToNextKey(failedKey: string): Promise<boolean> {
-    failedKeys.add(failedKey)
+    failedKeys.set(failedKey, Date.now())
 
+    const now = Date.now()
     let scanned = 0
     let nextIndex = currentKeyIndex
     while (scanned < uniqueKeys.length) {
       nextIndex = (nextIndex + 1) % uniqueKeys.length
-      if (!failedKeys.has(uniqueKeys[nextIndex])) {
+      if (isKeyAvailable(uniqueKeys[nextIndex], now)) {
         currentKeyIndex = nextIndex
         await updateOllamaMultiKey(uniqueKeys[currentKeyIndex], providerId)
         return true
@@ -275,7 +319,7 @@ export const OllamaMultiAuth: Plugin = async () => {
               return response
             }
             
-            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys failed with auth/rate-limit errors or maxRetries (${maxRetries}) was reached. Please wait and retry later.`)
+            throw new Error(`[${providerId}] ALL KEYS EXHAUSTED! ${uniqueKeys.length} keys failed with auth/rate-limit errors, maxRetries (${maxRetries}) was reached, or all failed keys are still inside failWindowMs (${failWindowMs}). Please wait and retry later.`)
           }
         }
       },
