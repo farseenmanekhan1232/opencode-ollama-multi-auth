@@ -10,9 +10,8 @@ const DEFAULT_FAIL_WINDOW_MS = 18000000
 const AUTH_JSON_PATH = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
 const STATE_DIR = join(homedir(), '.opencode')
 const FAILED_KEYS_STATE_PATH = join(STATE_DIR, 'ollama-keys-state.json')
-const PLUGIN_CONFIG_DIR = join(homedir(), '.config', 'opencode')
-const PLUGIN_CONFIG_JSON_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.json')
-const PLUGIN_CONFIG_JSONC_PATH = join(PLUGIN_CONFIG_DIR, 'ollama-multi-auth.jsonc')
+const PLUGIN_CONFIG_JSON_PATH = join(homedir(), '.config', 'opencode', 'ollama-multi-auth.json')
+const PLUGIN_CONFIG_JSONC_PATH = join(homedir(), '.config', 'opencode', 'ollama-multi-auth.jsonc')
 
 interface OllamaMultiAuthConfig {
   keys?: string[]
@@ -122,19 +121,6 @@ function parseJsonOrJsonc(content: string): OllamaMultiAuthConfig {
   const withoutComments = stripJsonComments(content)
   const withoutTrailingCommas = removeTrailingCommas(withoutComments)
   return JSON.parse(withoutTrailingCommas)
-}
-
-async function ensurePluginConfigExists(): Promise<void> {
-  if (existsSync(PLUGIN_CONFIG_JSON_PATH) || existsSync(PLUGIN_CONFIG_JSONC_PATH)) {
-    return
-  }
-
-  await mkdir(PLUGIN_CONFIG_DIR, { recursive: true })
-  const initialConfig: OllamaMultiAuthConfig = {
-    providerId: DEFAULT_PROVIDER_ID,
-    keys: [],
-  }
-  await writeFile(PLUGIN_CONFIG_JSON_PATH, JSON.stringify(initialConfig, null, 2), 'utf-8')
 }
 
 async function readPluginConfig(): Promise<OllamaMultiAuthConfig> {
@@ -304,7 +290,6 @@ function getFailWindowMs(config: OllamaMultiAuthConfig): number {
 }
 
 export const OllamaMultiAuth: Plugin = async () => {
-  await ensurePluginConfigExists()
   const config = await readPluginConfig()
   const providerId = config.providerId || DEFAULT_PROVIDER_ID
   const maxRetries = getMaxRetries(config)
